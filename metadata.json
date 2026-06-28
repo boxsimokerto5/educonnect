@@ -1,0 +1,6 @@
+{
+  "name": "EduConnect",
+  "description": "Aplikasi manajemen sekolah terintegrasi dengan arsitektur Multi-Tenant (Logical Separation) lengkap dengan portal Super Admin Global, Yayasan, Wali Kelas, dan Wali Murid.",
+  "requestFramePermissions": ["camera", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
