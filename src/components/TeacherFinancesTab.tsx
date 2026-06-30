@@ -1,5 +1,7 @@
-import React, { useState } from 'react';
-import { Student, Bill } from '../types';
+import React, { useState, useEffect } from 'react';
+import { Student, Bill, SavingsTransaction } from '../types';
+import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { db, dbAddSavingsTransaction, dbDeleteSavingsTransaction } from '../firebase';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Wallet, 
@@ -28,6 +30,7 @@ interface TeacherFinancesTabProps {
   onVerifyPayment: (studentId: string, billId: string, approve: boolean) => Promise<void>;
   className?: string;
   teacherName?: string;
+  initialTab?: 'approval' | 'create' | 'status' | 'savings';
 }
 
 export function TeacherFinancesTab({
@@ -36,17 +39,128 @@ export function TeacherFinancesTab({
   onAddStudentBill,
   onVerifyPayment,
   className = 'TK-A',
-  teacherName = 'Pak Budi'
+  teacherName = 'Pak Budi',
+  initialTab
 }: TeacherFinancesTabProps) {
   // Filter students by class
   const classStudents = students.filter(s => s.class === className);
   
-  // Tabs: 'approval' | 'create' | 'status'
-  const [activeTab, setActiveTab] = useState<'approval' | 'create' | 'status'>('approval');
+  // Tabs: 'approval' | 'create' | 'status' | 'savings'
+  const [activeTab, setActiveTab] = useState<'approval' | 'create' | 'status' | 'savings'>('approval');
+
+  // Sync activeTab with initialTab when it changes
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab]);
   
   // Search state for status tab
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedStudentId, setExpandedStudentId] = useState<string | null>(null);
+
+  // Savings states
+  const [savings, setSavings] = useState<SavingsTransaction[]>([]);
+  const [savingsStudentId, setSavingsStudentId] = useState('');
+  const [savingsType, setSavingsType] = useState<'setor' | 'tarik'>('setor');
+  const [savingsAmount, setSavingsAmount] = useState('');
+  const [savingsDescription, setSavingsDescription] = useState('');
+  const [savingsSubmitting, setSavingsSubmitting] = useState(false);
+  const [savingsSuccess, setSavingsSuccess] = useState(false);
+  const [savingsError, setSavingsError] = useState('');
+  const [expandedSavingsStudentId, setExpandedSavingsStudentId] = useState<string | null>(null);
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
+
+  // Subscribe to real-time savings
+  useEffect(() => {
+    const q = query(
+      collection(db, 'savings'),
+      where('className', '==', className)
+    );
+    const unsub = onSnapshot(q, (snapshot) => {
+      const txs: SavingsTransaction[] = [];
+      snapshot.forEach((doc) => {
+        txs.push({ id: doc.id, ...doc.data() } as SavingsTransaction);
+      });
+      txs.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      setSavings(txs);
+    }, (err) => {
+      console.error("Error loading savings:", err);
+    });
+    return () => unsub();
+  }, [className]);
+
+  // Handle adding a savings transaction
+  const handleAddSavings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!savingsStudentId) {
+      setSavingsError('Pilih siswa terlebih dahulu.');
+      return;
+    }
+    const amt = parseFloat(savingsAmount);
+    if (isNaN(amt) || amt <= 0) {
+      setSavingsError('Nominal harus lebih besar dari 0.');
+      return;
+    }
+
+    const targetStudent = classStudents.find(s => s.id === savingsStudentId);
+    if (!targetStudent) {
+      setSavingsError('Siswa tidak valid.');
+      return;
+    }
+
+    // Verify balance for withdrawals
+    const studentTxs = savings.filter(tx => tx.studentId === savingsStudentId);
+    const currentBal = studentTxs.reduce((sum, tx) => {
+      if (tx.type === 'setor') return sum + tx.amount;
+      if (tx.type === 'tarik') return sum - tx.amount;
+      return sum;
+    }, 0);
+
+    if (savingsType === 'tarik' && amt > currentBal) {
+      setSavingsError(`Saldo tidak mencukupi. Saldo saat ini: Rp ${currentBal.toLocaleString('id-ID')}`);
+      return;
+    }
+
+    setSavingsSubmitting(true);
+    setSavingsError('');
+    try {
+      const tx: SavingsTransaction = {
+        id: `save-${Date.now()}`,
+        studentId: savingsStudentId,
+        studentName: targetStudent.name,
+        className: className,
+        date: new Date().toISOString(),
+        type: savingsType,
+        amount: amt,
+        description: savingsDescription.trim() || (savingsType === 'setor' ? 'Setoran Tabungan' : 'Penarikan Tabungan'),
+        teacherName: teacherName,
+        schoolId: targetStudent.schoolId || ''
+      };
+
+      await dbAddSavingsTransaction(tx);
+      setSavingsSuccess(true);
+      setSavingsAmount('');
+      setSavingsDescription('');
+      setTimeout(() => {
+        setSavingsSuccess(false);
+      }, 1500);
+    } catch (err: any) {
+      console.error(err);
+      setSavingsError('Gagal menyimpan transaksi.');
+    } finally {
+      setSavingsSubmitting(false);
+    }
+  };
+
+  const handleDeleteSavings = async (txId: string) => {
+    try {
+      await dbDeleteSavingsTransaction(txId);
+      setConfirmingDeleteId(null);
+    } catch (err) {
+      console.error("Gagal menghapus transaksi:", err);
+    }
+  };
 
   // Bill creation form state
   const [billType, setBillType] = useState<'SPP' | 'Iuran Kegiatan' | 'Buku & Seragam' | 'Lainnya'>('SPP');
@@ -194,10 +308,10 @@ export function TeacherFinancesTab({
 
       {/* Custom Tabs Navigation */}
       <div className="px-4">
-        <div className="bg-slate-100/80 p-1 rounded-2xl flex border border-slate-200/40">
+        <div className="bg-slate-100/80 p-1 rounded-2xl flex border border-slate-200/40 gap-1 overflow-x-auto no-scrollbar">
           <button
             onClick={() => setActiveTab('approval')}
-            className={`flex-1 text-center py-2 text-[10px] font-bold rounded-xl transition-all relative ${
+            className={`flex-1 text-center py-2 px-1 text-[10px] font-bold rounded-xl transition-all relative whitespace-nowrap ${
               activeTab === 'approval' 
                 ? 'bg-white text-brand-blue shadow-sm' 
                 : 'text-slate-500 hover:text-slate-800'
@@ -212,7 +326,7 @@ export function TeacherFinancesTab({
           </button>
           <button
             onClick={() => setActiveTab('create')}
-            className={`flex-1 text-center py-2 text-[10px] font-bold rounded-xl transition-all ${
+            className={`flex-1 text-center py-2 px-1 text-[10px] font-bold rounded-xl transition-all whitespace-nowrap ${
               activeTab === 'create' 
                 ? 'bg-white text-brand-blue shadow-sm' 
                 : 'text-slate-500 hover:text-slate-800'
@@ -222,13 +336,23 @@ export function TeacherFinancesTab({
           </button>
           <button
             onClick={() => setActiveTab('status')}
-            className={`flex-1 text-center py-2 text-[10px] font-bold rounded-xl transition-all ${
+            className={`flex-1 text-center py-2 px-1 text-[10px] font-bold rounded-xl transition-all whitespace-nowrap ${
               activeTab === 'status' 
                 ? 'bg-white text-brand-blue shadow-sm' 
                 : 'text-slate-500 hover:text-slate-800'
             }`}
           >
             Daftar Siswa
+          </button>
+          <button
+            onClick={() => setActiveTab('savings')}
+            className={`flex-1 text-center py-2 px-1 text-[10px] font-bold rounded-xl transition-all whitespace-nowrap ${
+              activeTab === 'savings' 
+                ? 'bg-white text-brand-blue shadow-sm' 
+                : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            Tabungan
           </button>
         </div>
       </div>
@@ -591,6 +715,297 @@ export function TeacherFinancesTab({
                       </div>
                     );
                   })
+                )}
+              </div>
+            </motion.div>
+          )}
+
+          {/* 4. SAVINGS TAB */}
+          {activeTab === 'savings' && (
+            <motion.div
+              key="savings-tab"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-4"
+            >
+              {/* Stats Recap Card for Savings */}
+              {(() => {
+                const totalClassSetor = savings.reduce((sum, tx) => tx.type === 'setor' ? sum + tx.amount : sum, 0);
+                const totalClassTarik = savings.reduce((sum, tx) => tx.type === 'tarik' ? sum + tx.amount : sum, 0);
+                const totalClassSaldo = totalClassSetor - totalClassTarik;
+
+                return (
+                  <div className="bg-gradient-to-r from-sky-500 to-indigo-600 text-white p-4.5 rounded-3xl flex items-center justify-between shadow-md">
+                    <div className="space-y-1">
+                      <span className="text-[10px] text-sky-100 font-bold uppercase tracking-wider block">Total Saldo Tabungan Kelas</span>
+                      <h4 className="font-display font-black text-2xl text-yellow-300">
+                        Rp {totalClassSaldo.toLocaleString('id-ID')}
+                      </h4>
+                      <p className="text-[9px] text-sky-100/95 font-medium">
+                        Setor: Rp {totalClassSetor.toLocaleString('id-ID')} • Tarik: Rp {totalClassTarik.toLocaleString('id-ID')}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Form Input Transaksi Baru */}
+              <div className="bg-white border border-slate-100 rounded-3xl p-4.5 custom-shadow space-y-3.5">
+                <div className="flex items-center gap-2">
+                  <span className="p-1.5 bg-sky-100 text-sky-600 rounded-xl">
+                    <Plus size={16} />
+                  </span>
+                  <h3 className="font-display font-bold text-xs text-slate-800">Pencatatan Transaksi Baru</h3>
+                </div>
+
+                <form onSubmit={handleAddSavings} className="space-y-3">
+                  {/* Pilih Siswa */}
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Pilih Siswa</label>
+                    <select
+                      value={savingsStudentId}
+                      onChange={(e) => setSavingsStudentId(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200/60 rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none focus:border-sky-500"
+                    >
+                      <option value="">-- Pilih Siswa --</option>
+                      {classStudents.map(s => (
+                        <option key={s.id} value={s.id}>
+                          {s.name.toUpperCase()}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Jenis Transaksi */}
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Jenis Transaksi</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSavingsType('setor')}
+                        className={`py-2 rounded-xl text-xs font-bold transition-all border ${
+                          savingsType === 'setor'
+                            ? 'bg-emerald-50 text-emerald-600 border-emerald-200'
+                            : 'bg-slate-50 text-slate-500 border-transparent hover:bg-slate-100/50'
+                        }`}
+                      >
+                        Setor Tunai
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSavingsType('tarik')}
+                        className={`py-2 rounded-xl text-xs font-bold transition-all border ${
+                          savingsType === 'tarik'
+                            ? 'bg-rose-50 text-rose-600 border-rose-200'
+                            : 'bg-slate-50 text-slate-500 border-transparent hover:bg-slate-100/50'
+                        }`}
+                      >
+                        Tarik Tunai
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Nominal & Deskripsi */}
+                  <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Nominal (Rp)</label>
+                      <input
+                        type="number"
+                        placeholder="Contoh: 10000"
+                        value={savingsAmount}
+                        onChange={(e) => setSavingsAmount(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200/60 rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none focus:border-sky-500"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Keterangan (Opsional)</label>
+                      <input
+                        type="text"
+                        placeholder="Setoran Mingguan"
+                        value={savingsDescription}
+                        onChange={(e) => setSavingsDescription(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200/60 rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none focus:border-sky-500"
+                      />
+                    </div>
+                  </div>
+
+                  {savingsError && (
+                    <div className="text-[10px] text-red-600 bg-red-50 px-2.5 py-1.5 rounded-lg font-semibold flex items-center gap-1">
+                      <AlertCircle size={12} />
+                      <span>{savingsError}</span>
+                    </div>
+                  )}
+
+                  {savingsSuccess && (
+                    <div className="text-[10px] text-emerald-600 bg-emerald-50 px-2.5 py-1.5 rounded-lg font-semibold flex items-center gap-1 animate-pulse">
+                      <CheckCircle size={12} />
+                      <span>Transaksi tabungan berhasil dicatat!</span>
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={savingsSubmitting}
+                    className="w-full bg-sky-500 hover:bg-sky-600 text-white text-xs font-bold py-2.5 rounded-xl transition-all flex items-center justify-center gap-1 shadow-sm disabled:opacity-50"
+                  >
+                    {savingsSubmitting ? (
+                      <>
+                        <span className="w-3.5 h-3.5 border-2 border-slate-300 border-t-white rounded-full animate-spin"></span>
+                        Menyimpan...
+                      </>
+                    ) : (
+                      'Simpan Catatan Tabungan'
+                    )}
+                  </button>
+                </form>
+              </div>
+
+              {/* Rekap Tabungan Semua Siswa */}
+              <div className="space-y-2.5">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block px-1">
+                  Rekap Saldo Tabungan Siswa
+                </span>
+
+                {classStudents.length === 0 ? (
+                  <div className="bg-white rounded-3xl p-6 text-center text-slate-400 text-xs italic border border-slate-100">
+                    Tidak ada siswa di kelas ini.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {classStudents.map((student) => {
+                      const studentTxs = savings.filter(tx => tx.studentId === student.id);
+                      const studentSaldo = studentTxs.reduce((sum, tx) => {
+                        if (tx.type === 'setor') return sum + tx.amount;
+                        if (tx.type === 'tarik') return sum - tx.amount;
+                        return sum;
+                      }, 0);
+
+                      const isExpanded = expandedSavingsStudentId === student.id;
+
+                      return (
+                        <div
+                          key={student.id}
+                          className="bg-white border border-slate-100 rounded-3xl overflow-hidden custom-shadow transition-all hover:border-slate-200"
+                        >
+                          {/* Row Header */}
+                          <div
+                            onClick={() => setExpandedSavingsStudentId(isExpanded ? null : student.id)}
+                            className="p-4 flex items-center justify-between cursor-pointer"
+                          >
+                            <div className="flex items-center gap-3">
+                              <img
+                                src={student.avatar}
+                                alt={student.name}
+                                className="w-9 h-9 rounded-full object-cover border border-slate-50"
+                              />
+                              <div>
+                                <h4 className="font-display font-bold text-xs text-slate-800 uppercase leading-tight">
+                                  {student.name}
+                                </h4>
+                                <p className="text-[9px] text-slate-400 mt-0.5">
+                                  Wali: {student.parentName}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2.5">
+                              <div className="text-right">
+                                <span className={`text-xs font-black block ${studentSaldo > 0 ? 'text-sky-600' : 'text-slate-400'}`}>
+                                  Rp {studentSaldo.toLocaleString('id-ID')}
+                                </span>
+                                <span className="text-[8px] text-slate-400 block font-medium">
+                                  {studentTxs.length} Transaksi
+                                </span>
+                              </div>
+                              {isExpanded ? <ChevronUp size={14} className="text-slate-400" /> : <ChevronDown size={14} className="text-slate-400" />}
+                            </div>
+                          </div>
+
+                          {/* Collapsible Dropdown Riwayat */}
+                          <AnimatePresence>
+                            {isExpanded && (
+                              <motion.div
+                                initial={{ height: 0 }}
+                                animate={{ height: 'auto' }}
+                                exit={{ height: 0 }}
+                                className="bg-slate-50/50 border-t border-slate-100 overflow-hidden"
+                              >
+                                <div className="p-3.5 space-y-2">
+                                  <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">Riwayat Detail Transaksi</span>
+                                  
+                                  {studentTxs.length === 0 ? (
+                                    <p className="text-[10px] text-slate-400 italic">Belum ada riwayat setoran atau penarikan tabungan.</p>
+                                  ) : (
+                                    <div className="space-y-1.5 max-h-[220px] overflow-y-auto pr-1 no-scrollbar">
+                                      {studentTxs.map((tx) => (
+                                        <div
+                                          key={tx.id}
+                                          className="bg-white border border-slate-100/60 rounded-xl p-2.5 flex items-center justify-between shadow-sm"
+                                        >
+                                          <div>
+                                            <div className="flex items-center gap-1">
+                                              <span className={`text-[8px] font-black px-1 rounded ${
+                                                tx.type === 'setor' ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'
+                                              }`}>
+                                                {tx.type === 'setor' ? 'SETOR' : 'TARIK'}
+                                              </span>
+                                              <span className="text-[9px] text-slate-400 font-mono">
+                                                {new Date(tx.date).toLocaleDateString('id-ID', { day: '2-digit', month: 'short' })}
+                                              </span>
+                                            </div>
+                                            <span className="text-[10px] text-slate-700 font-bold block mt-1 leading-normal">
+                                              {tx.description}
+                                            </span>
+                                          </div>
+                                          
+                                          <div className="flex items-center gap-3">
+                                            <span className={`text-xs font-black ${
+                                              tx.type === 'setor' ? 'text-emerald-600' : 'text-rose-600'
+                                            }`}>
+                                              {tx.type === 'setor' ? '+' : '-'} Rp {tx.amount.toLocaleString('id-ID')}
+                                            </span>
+                                            {confirmingDeleteId === tx.id ? (
+                                              <div className="flex items-center gap-1.5 animate-pulse">
+                                                <button
+                                                  onClick={() => handleDeleteSavings(tx.id)}
+                                                  className="bg-rose-500 hover:bg-rose-600 text-white text-[9px] font-extrabold px-2 py-0.5 rounded-md transition-all shadow-sm"
+                                                  title="Yakin Hapus"
+                                                >
+                                                  Hapus?
+                                                </button>
+                                                <button
+                                                  onClick={() => setConfirmingDeleteId(null)}
+                                                  className="bg-slate-200 hover:bg-slate-300 text-slate-600 text-[9px] font-extrabold px-1.5 py-0.5 rounded-md transition-all"
+                                                  title="Batal"
+                                                >
+                                                  Batal
+                                                </button>
+                                              </div>
+                                            ) : (
+                                              <button
+                                                onClick={() => setConfirmingDeleteId(tx.id)}
+                                                className="text-slate-300 hover:text-red-500 transition-colors p-1"
+                                                title="Hapus Transaksi"
+                                              >
+                                                <svg className="w-3.5 h-3.5 stroke-current" fill="none" viewBox="0 0 24 24" strokeWidth="2">
+                                                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                </svg>
+                                              </button>
+                                            )}
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </div>
+                      );
+                    })}
+                  </div>
                 )}
               </div>
             </motion.div>

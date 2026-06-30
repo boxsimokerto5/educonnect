@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Student, EPermit } from '../types';
 import { motion } from 'motion/react';
 import {
@@ -41,6 +41,9 @@ export default function ParentAttendanceTab({
     );
   }
 
+  const [historyTab, setHistoryTab] = useState<'kehadiran' | 'perizinan'>('kehadiran');
+  const studentPermits = permits.filter((p) => p.studentId === student.id);
+
   // Date representation
   const todayFormatted = new Date().toLocaleDateString('id-ID', {
     weekday: 'long',
@@ -49,14 +52,33 @@ export default function ParentAttendanceTab({
     year: 'numeric'
   });
 
-  // Mock static history logs for high visual finish
-  const mockHistoryLogs = [
-    { date: 'Jumat, 26 Juni 2026', status: 'HADIR', time: '07:15 WIB', type: 'success' },
-    { date: 'Kamis, 25 Juni 2026', status: 'HADIR', time: '07:08 WIB', type: 'success' },
-    { date: 'Rabu, 24 Juni 2026', status: 'SAKIT', time: 'Izin Disetujui', type: 'warning' },
-    { date: 'Selasa, 23 Juni 2026', status: 'HADIR', time: '07:11 WIB', type: 'success' },
-    { date: 'Senin, 22 Juni 2026', status: 'HADIR', time: '07:14 WIB', type: 'success' },
-  ];
+  const historyLogs = student.attendanceHistory || [];
+
+  const getStatusStyle = (status: string) => {
+    switch (status) {
+      case 'HADIR':
+        return {
+          iconClass: 'bg-emerald-50 text-emerald-600',
+          badgeClass: 'bg-emerald-100 text-emerald-700'
+        };
+      case 'SAKIT':
+      case 'IZIN':
+        return {
+          iconClass: 'bg-amber-50 text-amber-600',
+          badgeClass: 'bg-amber-100 text-amber-700'
+        };
+      case 'ALFA':
+        return {
+          iconClass: 'bg-rose-50 text-rose-600',
+          badgeClass: 'bg-rose-100 text-rose-700'
+        };
+      default:
+        return {
+          iconClass: 'bg-slate-50 text-slate-600',
+          badgeClass: 'bg-slate-100 text-slate-700'
+        };
+    }
+  };
 
   return (
     <div className="p-6 space-y-6 pt-8 pb-24" id="parent-attendance-monitoring">
@@ -207,29 +229,132 @@ export default function ParentAttendanceTab({
           </div>
         </div>
 
-        {/* History logs block */}
-        <div className="space-y-3">
-          <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider text-left font-mono">Riwayat Kehadiran Terakhir</h4>
-          <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden divide-y divide-slate-50">
-            {mockHistoryLogs.map((log, index) => (
-              <div key={index} className="p-4 flex items-center justify-between text-xs font-semibold">
-                <div className="flex items-center gap-3">
-                  <div className={`p-2 rounded-lg ${log.type === 'success' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
-                    <Calendar size={14} />
-                  </div>
-                  <span className="text-slate-700 text-left font-medium">{log.date}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] text-slate-400 font-bold font-mono">{log.time}</span>
-                  <span className={`text-[9px] font-bold px-2 py-0.5 rounded font-mono ${
-                    log.type === 'success' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
-                  }`}>
-                    {log.status}
-                  </span>
-                </div>
-              </div>
-            ))}
+        {/* History & Permit Tabs Block */}
+        <div className="space-y-4">
+          <div className="flex bg-slate-100 p-1 rounded-2xl border border-slate-200/60">
+            <button
+              onClick={() => setHistoryTab('kehadiran')}
+              className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all ${
+                historyTab === 'kehadiran'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              Riwayat Kehadiran
+            </button>
+            <button
+              onClick={() => setHistoryTab('perizinan')}
+              className={`flex-1 py-2 text-xs font-bold rounded-xl transition-all ${
+                historyTab === 'perizinan'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              Riwayat Perizinan ({studentPermits.length})
+            </button>
           </div>
+
+          {historyTab === 'kehadiran' ? (
+            <div className="space-y-3">
+              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider text-left font-mono">Kehadiran Harian</h4>
+              <div className="bg-white rounded-[2rem] border border-slate-100 shadow-sm overflow-hidden divide-y divide-slate-50">
+                {historyLogs.length === 0 ? (
+                  <div className="p-8 text-center text-slate-400 space-y-2">
+                    <Calendar size={28} className="mx-auto text-slate-300 stroke-[1.5]" />
+                    <p className="text-xs font-semibold">Belum ada riwayat kehadiran.</p>
+                    <p className="text-[10px] text-slate-400 leading-normal font-medium max-w-[240px] mx-auto">
+                      Riwayat presensi harian akan terekam otomatis setiap pukul 18:00 WIB setelah dilakukan pencatatan.
+                    </p>
+                  </div>
+                ) : (
+                  historyLogs.map((log, index) => {
+                    const style = getStatusStyle(log.status);
+                    return (
+                      <div key={index} className="p-4 flex items-center justify-between text-xs font-semibold">
+                        <div className="flex items-center gap-3">
+                          <div className={`p-2 rounded-lg ${style.iconClass}`}>
+                            <Calendar size={14} />
+                          </div>
+                          <span className="text-slate-700 text-left font-medium">{log.date}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {log.time && <span className="text-[10px] text-slate-400 font-bold font-mono">{log.time}</span>}
+                          <span className={`text-[9px] font-bold px-2 py-0.5 rounded font-mono ${style.badgeClass}`}>
+                            {log.status}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider text-left font-mono">Daftar Pengajuan Izin (Sakit / Lainnya)</h4>
+              {studentPermits.length === 0 ? (
+                <div className="p-8 text-center text-slate-400 space-y-2 bg-white rounded-[2rem] border border-slate-100 shadow-sm">
+                  <FileText size={28} className="mx-auto text-slate-300 stroke-[1.5]" />
+                  <p className="text-xs font-semibold">Belum ada riwayat perizinan.</p>
+                  <p className="text-[10px] text-slate-400 leading-normal font-medium max-w-[240px] mx-auto">
+                    Semua pengajuan izin sakit atau keperluan lainnya akan tercatat di sini beserta status persetujuannya.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {studentPermits.map((permit) => {
+                    const isSakit = permit.type === 'Sakit';
+                    const statusColors = {
+                      Pending: 'bg-amber-50 text-amber-700 border-amber-100',
+                      Approved: 'bg-emerald-50 text-emerald-700 border-emerald-100',
+                      Rejected: 'bg-rose-50 text-rose-700 border-rose-100',
+                    };
+                    const statusLabel = {
+                      Pending: 'Menunggu',
+                      Approved: 'Disetujui',
+                      Rejected: 'Ditolak',
+                    };
+
+                    return (
+                      <div key={permit.id} className="p-4 bg-white rounded-2xl border border-slate-100 shadow-sm space-y-3 text-left">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-lg border ${
+                              isSakit ? 'bg-red-50 text-red-600 border-red-100' : 'bg-indigo-50 text-indigo-600 border-indigo-100'
+                            }`}>
+                              {isSakit ? 'Sakit' : 'Lainnya'}
+                            </span>
+                            <span className="text-[9px] text-slate-400 font-bold font-mono">
+                              {new Date(permit.submittedAt).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })}
+                            </span>
+                          </div>
+                          <span className={`text-[9px] font-bold px-2 py-0.5 rounded border ${statusColors[permit.status]}`}>
+                            {statusLabel[permit.status]}
+                          </span>
+                        </div>
+
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-1 text-xs text-slate-700 font-bold">
+                            <Calendar size={13} className="text-slate-400" />
+                            <span>{permit.startDate} s/d {permit.endDate}</span>
+                          </div>
+                          <p className="text-xs text-slate-500 font-medium leading-relaxed">
+                            <strong className="text-slate-600">Alasan:</strong> {permit.reason}
+                          </p>
+                          {permit.attachmentName && (
+                            <div className="flex items-center gap-1 mt-1 text-[10px] text-brand-blue font-bold bg-slate-50 px-2 py-0.5 rounded w-fit">
+                              <FileText size={11} />
+                              <span className="truncate max-w-[180px]">{permit.attachmentName}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Link to Request Permit */}

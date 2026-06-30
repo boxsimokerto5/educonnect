@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { School, User } from '../types';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
-import { db, dbAddSchool, dbUpdateSchoolStatus, dbUpdateUserPassword, dbGetSuperAdminUser, dbUpdateSchoolAndYayasan } from '../firebase';
+import { db, dbAddSchool, dbUpdateSchoolStatus, dbUpdateUserPassword, dbGetSuperAdminUser, dbUpdateSchoolAndYayasan, dbUpdateSchoolPremiumStatus } from '../firebase';
 import {
   School as SchoolIcon,
   Plus,
@@ -17,7 +17,9 @@ import {
   TrendingUp,
   X,
   FileSpreadsheet,
-  Edit
+  Edit,
+  Crown,
+  Sparkles
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -38,6 +40,7 @@ export default function SuperAdminDashboard({ onLogout, adminName }: SuperAdminD
   const [yayasanName, setYayasanName] = useState('');
   const [yayasanEmail, setYayasanEmail] = useState('');
   const [yayasanPassword, setYayasanPassword] = useState('');
+  const [isPremium, setIsPremium] = useState(false);
   
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
@@ -60,6 +63,7 @@ export default function SuperAdminDashboard({ onLogout, adminName }: SuperAdminD
   const [editYayasanName, setEditYayasanName] = useState('');
   const [editYayasanEmail, setEditYayasanEmail] = useState('');
   const [editYayasanPassword, setEditYayasanPassword] = useState('');
+  const [editIsPremium, setEditIsPremium] = useState(false);
   const [editErrorMsg, setEditErrorMsg] = useState('');
   const [editSuccessMsg, setEditSuccessMsg] = useState('');
   const [isEditSubmitting, setIsEditSubmitting] = useState(false);
@@ -123,7 +127,8 @@ export default function SuperAdminDashboard({ onLogout, adminName }: SuperAdminD
         id: cleanSchoolId,
         name: schoolName.trim(),
         status: 'active',
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        isPremium: isPremium
       };
 
       const newYayasan: User = {
@@ -145,6 +150,7 @@ export default function SuperAdminDashboard({ onLogout, adminName }: SuperAdminD
       setYayasanName('');
       setYayasanEmail('');
       setYayasanPassword('');
+      setIsPremium(false);
       
       setTimeout(() => {
         setShowAddModal(false);
@@ -180,6 +186,7 @@ export default function SuperAdminDashboard({ onLogout, adminName }: SuperAdminD
   const handleOpenEditModal = (school: School) => {
     setEditSchoolId(school.id);
     setEditSchoolName(school.name);
+    setEditIsPremium(!!school.isPremium);
     
     // Find owner
     const schoolOwner = users.find(u => u.schoolId === school.id && u.role === 'yayasan');
@@ -232,6 +239,8 @@ export default function SuperAdminDashboard({ onLogout, adminName }: SuperAdminD
           password: editYayasanPassword ? editYayasanPassword.trim() : undefined
         }
       );
+
+      await dbUpdateSchoolPremiumStatus(editSchoolId, editIsPremium);
 
       setEditSuccessMsg('Sekolah dan Akun Yayasan berhasil diperbarui!');
       setTimeout(() => {
@@ -426,12 +435,28 @@ export default function SuperAdminDashboard({ onLogout, adminName }: SuperAdminD
                     <tr key={school.id} className="hover:bg-slate-50/50 transition-colors">
                       <td className="py-4 px-4">
                         <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-xl bg-slate-100 text-slate-600 flex items-center justify-center">
-                            <SchoolIcon size={18} />
+                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                            school.isPremium 
+                              ? 'bg-amber-50 text-amber-600 border border-amber-100' 
+                              : 'bg-slate-100 text-slate-600'
+                          }`}>
+                            {school.isPremium ? <Crown size={18} className="fill-amber-400" /> : <SchoolIcon size={18} />}
                           </div>
                           <div>
-                            <span className="font-bold text-slate-800 block text-sm">{school.name}</span>
-                            <span className="font-mono text-[10px] text-brand-blue font-bold px-1.5 py-0.5 bg-blue-50 rounded-md">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-bold text-slate-800 text-sm">{school.name}</span>
+                              {school.isPremium ? (
+                                <span className="bg-amber-100 text-amber-800 text-[8px] font-black uppercase px-1.5 py-0.5 rounded-full flex items-center gap-0.5 border border-amber-200 shadow-sm">
+                                  <Crown size={8} className="fill-amber-500 text-amber-500" />
+                                  PREMIUM
+                                </span>
+                              ) : (
+                                <span className="bg-slate-100 text-slate-500 text-[8px] font-bold uppercase px-1.5 py-0.5 rounded-full border border-slate-200">
+                                  FREE (ADS)
+                                </span>
+                              )}
+                            </div>
+                            <span className="font-mono text-[10px] text-brand-blue font-bold px-1.5 py-0.5 bg-blue-50 rounded-md inline-block mt-1">
                               ID: {school.id}
                             </span>
                           </div>
@@ -570,6 +595,29 @@ export default function SuperAdminDashboard({ onLogout, adminName }: SuperAdminD
                       required
                       id="input-school-name"
                     />
+                  </div>
+
+                  {/* Premium Tier Toggle */}
+                  <div className="bg-amber-50 border border-amber-100 rounded-2xl p-3 flex justify-between items-center">
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-1.5">
+                        <Crown size={14} className="text-amber-500 fill-amber-500" />
+                        <span className="text-[11px] font-bold text-amber-900 uppercase">Layanan Premium</span>
+                      </div>
+                      <p className="text-[10px] text-amber-700 leading-normal">
+                        Bebas iklan untuk seluruh wali siswa dan guru di sekolah ini.
+                      </p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={isPremium}
+                        onChange={(e) => setIsPremium(e.target.checked)}
+                        className="sr-only peer"
+                        id="toggle-is-premium"
+                      />
+                      <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
+                    </label>
                   </div>
 
                   <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-50 pt-3 pb-1">Detail Akun Yayasan (Tenant Admin)</h4>
@@ -834,6 +882,29 @@ export default function SuperAdminDashboard({ onLogout, adminName }: SuperAdminD
                       required
                       id="edit-input-school-name"
                     />
+                  </div>
+
+                  {/* Premium Tier Toggle */}
+                  <div className="bg-amber-50 border border-amber-100 rounded-2xl p-3 flex justify-between items-center">
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-1.5">
+                        <Crown size={14} className="text-amber-500 fill-amber-500" />
+                        <span className="text-[11px] font-bold text-amber-900 uppercase">Layanan Premium</span>
+                      </div>
+                      <p className="text-[10px] text-amber-700 leading-normal">
+                        Bebas iklan untuk seluruh wali siswa dan guru di sekolah ini.
+                      </p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={editIsPremium}
+                        onChange={(e) => setEditIsPremium(e.target.checked)}
+                        className="sr-only peer"
+                        id="toggle-edit-is-premium"
+                      />
+                      <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
+                    </label>
                   </div>
 
                   <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-50 pt-2 pb-1">Pemilik Yayasan (Penanggung Jawab)</h4>

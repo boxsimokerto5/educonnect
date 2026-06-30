@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { School, User, Student } from '../types';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
-import { db, dbAddTeacher, dbDeleteTeacher, dbUpdateSchoolLogo } from '../firebase';
+import { db, dbAddTeacher, dbDeleteTeacher, dbUpdateSchoolLogo, dbUpdateSchoolPaymentSettings } from '../firebase';
 import {
   Users,
   GraduationCap,
@@ -20,7 +20,13 @@ import {
   FileSpreadsheet,
   Upload,
   Image as ImageIcon,
-  Edit
+  Edit,
+  Crown,
+  Sparkles,
+  CreditCard,
+  Key,
+  Save,
+  Settings
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -61,6 +67,30 @@ export default function YayasanDashboard({ currentUser, onLogout }: YayasanDashb
   const [isUploadingLogo, setIsUploadingLogo] = useState(false);
   const [logoError, setLogoError] = useState('');
   const [logoSuccess, setLogoSuccess] = useState('');
+
+  // Payment Settings States
+  const [bankAccountName, setBankAccountName] = useState('');
+  const [bankAccountType, setBankAccountType] = useState('BCA');
+  const [bankAccountNumber, setBankAccountNumber] = useState('');
+  const [paymentGatewayType, setPaymentGatewayType] = useState<'manual' | 'midtrans' | 'duitku' | 'other'>('duitku');
+  const [paymentGatewayApiKey, setPaymentGatewayApiKey] = useState('');
+  const [paymentGatewayMerchantCode, setPaymentGatewayMerchantCode] = useState('');
+  
+  const [paymentSettingsError, setPaymentSettingsError] = useState('');
+  const [paymentSettingsSuccess, setPaymentSettingsSuccess] = useState('');
+  const [isSavingPaymentSettings, setIsSavingPaymentSettings] = useState(false);
+
+  // Sync state when school details are loaded
+  useEffect(() => {
+    if (school) {
+      setBankAccountName(school.bankAccountName || '');
+      setBankAccountType(school.bankAccountType || 'BCA');
+      setBankAccountNumber(school.bankAccountNumber || '');
+      setPaymentGatewayType(school.paymentGatewayType || 'duitku');
+      setPaymentGatewayApiKey(school.paymentGatewayApiKey || '');
+      setPaymentGatewayMerchantCode(school.paymentGatewayMerchantCode || '');
+    }
+  }, [school]);
 
   // Fetch school details, teachers, and students associated with this schoolId
   useEffect(() => {
@@ -278,11 +308,25 @@ export default function YayasanDashboard({ currentUser, onLogout }: YayasanDashb
             </div>
           )}
           <div className="space-y-1">
-            <span className="text-[10px] font-bold text-blue-200 uppercase tracking-widest block font-mono">
-              Tenant Admin Portal • {school?.name || 'Sekolah Mitra'}
-            </span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[10px] font-bold text-blue-200 uppercase tracking-widest block font-mono">
+                Tenant Admin Portal • {school?.name || 'Sekolah Mitra'}
+              </span>
+              {school?.isPremium && (
+                <span className="bg-amber-400/20 text-amber-200 border border-amber-400/30 text-[8px] font-bold uppercase px-2 py-0.5 rounded-full flex items-center gap-0.5 shadow-sm">
+                  <Crown size={8} className="fill-amber-300 text-amber-300 animate-bounce" />
+                  PREMIUM
+                </span>
+              )}
+            </div>
             <h1 className="font-display font-black text-xl tracking-tight flex items-center gap-2">
               Dashboard Yayasan
+              {school?.isPremium && (
+                <span className="bg-gradient-to-r from-amber-400 to-amber-500 text-amber-950 text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full flex items-center gap-1 border border-amber-300 shadow-sm shrink-0">
+                  <Crown size={10} className="fill-amber-950 text-amber-950" />
+                  PREMIUM
+                </span>
+              )}
             </h1>
             <p className="text-xs text-blue-100 font-medium">Selamat datang kembali, {currentUser.fullName}. Kelola operasional internal sekolah Anda.</p>
           </div>
@@ -318,16 +362,27 @@ export default function YayasanDashboard({ currentUser, onLogout }: YayasanDashb
           </div>
         </div>
 
-        <div className="bg-white rounded-2xl p-5 border border-slate-100 shadow-sm flex items-center gap-4">
-          <div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
-            <UserCheck size={20} className="stroke-[2.5px]" />
+        <div className={`bg-white rounded-2xl p-5 border shadow-sm flex items-center gap-4 ${
+          school?.isPremium ? 'border-amber-100 bg-amber-50/10' : 'border-slate-100'
+        }`}>
+          <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${
+            school?.isPremium ? 'bg-amber-100 text-amber-600' : 'bg-emerald-50 text-emerald-600'
+          }`}>
+            {school?.isPremium ? <Crown size={22} className="fill-amber-400" /> : <UserCheck size={20} className="stroke-[2.5px]" />}
           </div>
           <div>
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Status Sekolah</span>
-            <span className="text-sm font-bold text-emerald-600 flex items-center gap-1 mt-0.5 uppercase tracking-wide">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse"></span>
-              {school?.status === 'active' ? 'Aktif / Operasional' : 'Suspend'}
-            </span>
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Status Layanan</span>
+            {school?.isPremium ? (
+              <span className="text-sm font-black text-amber-600 flex items-center gap-1 mt-0.5 uppercase tracking-wide">
+                <Sparkles size={12} className="animate-pulse text-amber-500" />
+                PREMIUM ACTIVE
+              </span>
+            ) : (
+              <span className="text-sm font-bold text-emerald-600 flex items-center gap-1 mt-0.5 uppercase tracking-wide">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse"></span>
+                {school?.status === 'active' ? 'Aktif / Regular' : 'Suspend'}
+              </span>
+            )}
           </div>
         </div>
       </div>

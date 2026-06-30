@@ -114,23 +114,71 @@ export default function LiaisonNotebook({
     }
   }, [classStudents, newStudentId]);
 
-  // Filter Liaison entries
-  const filteredEntries = entries.filter((entry) => {
-    // If parent, only show entries for currently selected kid
-    if (!isTeacher) {
-      return entry.studentId === selectedStudentId;
-    }
-    // If teacher, optionally filter by student
-    if (selectedStudentFilter !== 'all') {
-      return entry.studentId === selectedStudentFilter;
-    }
-    // Only show entries in teacher's class
-    if (activeClassName) {
-      return entry.className === activeClassName;
-    }
-    const teacherClasses = currentUser.className ? currentUser.className.split(',').map(c => c.trim()) : ['TK-A'];
-    return teacherClasses.includes(entry.className);
-  });
+  // Filter and sort Liaison entries (newest/latest updated first)
+  const filteredEntries = entries
+    .filter((entry) => {
+      // If parent, only show entries for currently selected kid
+      if (!isTeacher) {
+        return entry.studentId === selectedStudentId;
+      }
+      // If teacher, optionally filter by student
+      if (selectedStudentFilter !== 'all') {
+        return entry.studentId === selectedStudentFilter;
+      }
+      // Only show entries in teacher's class
+      if (activeClassName) {
+        return entry.className === activeClassName;
+      }
+      const teacherClasses = currentUser.className ? currentUser.className.split(',').map(c => c.trim()) : ['TK-A'];
+      return teacherClasses.includes(entry.className);
+    })
+    .sort((a, b) => {
+      const getScore = (entry: LiaisonEntry) => {
+        const monthsMap: Record<string, string> = {
+          'jan': 'Jan', 'feb': 'Feb', 'mar': 'Mar', 'apr': 'Apr', 'mei': 'May', 'jun': 'Jun',
+          'jul': 'Jul', 'agt': 'Aug', 'agu': 'Aug', 'sep': 'Sep', 'okt': 'Oct', 'nov': 'Nov', 'des': 'Dec',
+          'januari': 'January', 'februari': 'February', 'maret': 'March', 'april': 'April',
+          'juni': 'June', 'juli': 'July', 'agustus': 'August',
+          'september': 'September', 'oktober': 'October', 'november': 'November', 'desember': 'December'
+        };
+
+        if (entry.lastUpdated) {
+          const cleanStr = entry.lastUpdated.trim().toLowerCase();
+          
+          // Check if it's already a standard parseable format
+          const parsed = Date.parse(cleanStr);
+          if (!isNaN(parsed)) return parsed;
+
+          const parts = cleanStr.split(/\s+/);
+          if (parts.length >= 3) {
+            const day = parseInt(parts[0], 10);
+            const monthName = parts[1];
+            const year = parseInt(parts[2], 10);
+            
+            const englishMonth = monthsMap[monthName] || monthName;
+            const dateObj = new Date(`${englishMonth} ${day}, ${year}`);
+            if (!isNaN(dateObj.getTime())) {
+              return dateObj.getTime();
+            }
+          }
+        }
+
+        // Fallback: parse numeric suffix from ID
+        if (entry.id && entry.id.startsWith('liaison-')) {
+          const suffix = entry.id.replace('liaison-', '');
+          const num = parseInt(suffix, 10);
+          if (!isNaN(num)) {
+            // For older small IDs like '1', '2', we return them, but they'll be small
+            return num;
+          }
+        }
+        return 0;
+      };
+
+      const scoreA = getScore(a);
+      const scoreB = getScore(b);
+      return scoreB - scoreA;
+    });
 
   const activeEntry = entries.find((e) => e.id === activeEntryId);
 

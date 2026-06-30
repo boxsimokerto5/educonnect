@@ -1,7 +1,11 @@
-import React, { useState } from 'react';
-import { Student, CalendarEvent, Announcement, Bill, EPermit } from '../types';
+import React, { useState, useEffect } from 'react';
+import { Student, CalendarEvent, Announcement, Bill, EPermit, SavingsTransaction, Schedule, AppNotification, User as AuthUser } from '../types';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { db } from '../firebase';
 import { motion, AnimatePresence } from 'motion/react';
 import CalendarClockWidget from './CalendarClockWidget';
+import NotificationActivator from './NotificationActivator';
+import NotificationInbox from './NotificationInbox';
 import {
   Bell,
   ChevronDown,
@@ -22,7 +26,10 @@ import {
   BookOpen,
   DollarSign,
   Camera,
-  Smile
+  Smile,
+  Clock,
+  MapPin,
+  Crown
 } from 'lucide-react';
 
 interface ParentDashboardProps {
@@ -40,6 +47,14 @@ interface ParentDashboardProps {
   onUpdateAttendance?: (studentId: string, status: Student['attendanceToday'], time?: string) => void;
   schoolLogoUrl?: string;
   schoolName?: string;
+  onReplayOnboarding?: () => void;
+  isPremium?: boolean;
+  notifications?: AppNotification[];
+  currentUser?: AuthUser | null;
+  onMarkNotificationAsRead?: (id: string) => void;
+  onMarkAllNotificationsAsRead?: () => void;
+  onDeleteNotification?: (id: string) => void;
+  onNavigateToNotification?: (type: string, relatedId?: string) => void;
 }
 
 export default function ParentDashboard({
@@ -56,24 +71,80 @@ export default function ParentDashboard({
   parentName = 'Ibu Maria',
   onUpdateAttendance,
   schoolLogoUrl,
-  schoolName
+  schoolName,
+  onReplayOnboarding = () => {},
+  isPremium,
+  notifications = [],
+  currentUser = null,
+  onMarkNotificationAsRead = () => {},
+  onMarkAllNotificationsAsRead = () => {},
+  onDeleteNotification = () => {},
+  onNavigateToNotification = () => {}
 }: ParentDashboardProps) {
   const currentStudent = students.find((s) => s.id === selectedStudentId) || students[0];
   
-  if (!currentStudent) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] p-8 text-center space-y-4">
-        <div className="w-10 h-10 border-4 border-brand-blue border-t-transparent rounded-full animate-spin"></div>
-        <div>
-          <h3 className="font-display font-black text-slate-800 text-sm">Memuat Data Siswa...</h3>
-          <p className="text-xs text-slate-400 mt-1">Mengambil informasi profil anak Anda.</p>
-        </div>
-      </div>
-    );
-  }
-
   const [showChildDropdown, setShowChildDropdown] = useState(false);
-  const [activeModal, setActiveModal] = useState<'spp' | 'agenda' | 'rapor' | 'announcement' | null>(null);
+  const [savingsList, setSavingsList] = useState<SavingsTransaction[]>([]);
+
+  useEffect(() => {
+    if (!currentStudent?.id) return;
+    const q = query(
+      collection(db, 'savings'),
+      where('studentId', '==', currentStudent.id)
+    );
+    const unsub = onSnapshot(q, (snapshot) => {
+      const txs: SavingsTransaction[] = [];
+      snapshot.forEach((doc) => {
+        txs.push({ id: doc.id, ...doc.data() } as SavingsTransaction);
+      });
+      // Sort by date desc
+      txs.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      setSavingsList(txs);
+    }, (error) => {
+      console.error("Error loading student savings:", error);
+    });
+    return () => unsub();
+  }, [currentStudent?.id]);
+
+  const totalSavingsBalance = savingsList.reduce((sum, tx) => {
+    if (tx.type === 'setor') return sum + tx.amount;
+    if (tx.type === 'tarik') return sum - tx.amount;
+    return sum;
+  }, 0);
+  const [activeModal, setActiveModal] = useState<'spp' | 'agenda' | 'rapor' | 'announcement' | 'savings' | 'jadwal' | null>(null);
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [selectedDay, setSelectedDay] = useState<'Senin' | 'Selasa' | 'Rabu' | 'Kamis' | 'Jumat' | 'Sabtu'>('Senin');
+
+  useEffect(() => {
+    const dayNames = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+    const todayName = dayNames[new Date().getDay()];
+    if (todayName !== 'Minggu') {
+      setSelectedDay(todayName as any);
+    } else {
+      setSelectedDay('Senin');
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!currentStudent?.class) return;
+    const q = query(
+      collection(db, 'schedules'),
+      where('schoolId', '==', currentStudent.schoolId || 'school-1'),
+      where('className', '==', currentStudent.class)
+    );
+    const unsub = onSnapshot(q, (snapshot) => {
+      const list: Schedule[] = [];
+      snapshot.forEach((doc) => {
+        list.push({ id: doc.id, ...doc.data() } as Schedule);
+      });
+      list.sort((a, b) => a.startTime.localeCompare(b.startTime));
+      setSchedules(list);
+    }, (error) => {
+      console.error("Error loading schedules:", error);
+    });
+    return () => unsub();
+  }, [currentStudent?.class, currentStudent?.schoolId]);
+
   const [selectedAnnouncement, setSelectedAnnouncement] = useState<Announcement | null>(null);
   
   // Payment Simulation state
@@ -90,6 +161,18 @@ export default function ParentDashboard({
   const [downloadingBillId, setDownloadingBillId] = useState<string | null>(null);
   const [downloadSuccessMessage, setDownloadSuccessMessage] = useState<string | null>(null);
 
+  if (!currentStudent) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] p-8 text-center space-y-4">
+        <div className="w-10 h-10 border-4 border-brand-blue border-t-transparent rounded-full animate-spin"></div>
+        <div>
+          <h3 className="font-display font-black text-slate-800 text-sm">Memuat Data Siswa...</h3>
+          <p className="text-xs text-slate-400 mt-1">Mengambil informasi profil anak Anda.</p>
+        </div>
+      </div>
+    );
+  }
+
   // Count active unpaid bills
   const unpaidBillsCount = currentStudent.sppBills.filter((b) => b.status === 'Unpaid').length;
   const unpaidBills = currentStudent.sppBills.filter((b) => b.status === 'Unpaid');
@@ -97,7 +180,23 @@ export default function ParentDashboard({
 
   // Find if there's any pending or approved permit today for this child
   const childPermits = permits.filter((p) => p.studentId === currentStudent.id);
-  const activePermit = childPermits.find((p) => p.status === 'Pending' || p.status === 'Approved');
+  
+  // Get today's date in local timezone YYYY-MM-DD
+  const localToday = new Date();
+  const todayStr = `${localToday.getFullYear()}-${String(localToday.getMonth() + 1).padStart(2, '0')}-${String(localToday.getDate()).padStart(2, '0')}`;
+  
+  const activePermit = childPermits.find((p) => {
+    if (p.status === 'Pending') {
+      // Pending permits are active if today is before or equal to the end date
+      return todayStr <= p.endDate;
+    }
+    if (p.status === 'Approved') {
+      // Approved permits are active only if today is within the start and end date range
+      // (This automatically makes it disappear once today's date is past the end date)
+      return todayStr >= p.startDate && todayStr <= p.endDate;
+    }
+    return false;
+  });
 
   const handleOpenAnnouncement = (ann: Announcement) => {
     setSelectedAnnouncement(ann);
@@ -126,13 +225,15 @@ export default function ParentDashboard({
   return (
     <div className="space-y-6 pb-20">
       {/* Curved Dark Header Backdrop */}
-      <div className="bg-brand-blue text-white rounded-b-[2.5rem] px-5 pt-8 pb-12 relative overflow-hidden">
-        {/* Subtle decorative circles */}
-        <div className="absolute top-[-50px] right-[-50px] w-48 h-48 rounded-full bg-slate-800 opacity-30 blur-2xl"></div>
-        <div className="absolute bottom-[-10px] left-[-30px] w-32 h-32 rounded-full bg-slate-800 opacity-20 blur-xl"></div>
+      <div className="bg-brand-blue text-white rounded-b-[2.5rem] px-5 pt-8 pb-12 relative">
+        {/* Subtle decorative circles bounded inside an overflow-hidden container */}
+        <div className="absolute inset-0 rounded-b-[2.5rem] overflow-hidden pointer-events-none z-0">
+          <div className="absolute top-[-50px] right-[-50px] w-48 h-48 rounded-full bg-slate-800 opacity-30 blur-2xl"></div>
+          <div className="absolute bottom-[-10px] left-[-30px] w-32 h-32 rounded-full bg-slate-800 opacity-20 blur-xl"></div>
+        </div>
 
         {/* Brand & Notifications Bar */}
-        <div className="flex items-center justify-between mb-6 relative z-10">
+        <div className="flex items-center justify-between mb-6 relative z-50">
           <div className="flex items-center gap-2.5">
             {schoolLogoUrl ? (
               <div className="w-10 h-10 rounded-xl bg-white p-1 flex items-center justify-center overflow-hidden shadow-md shrink-0">
@@ -148,14 +249,34 @@ export default function ParentDashboard({
             )}
             <div>
               <span className="text-[10px] text-slate-200 font-black uppercase tracking-widest block leading-tight">{schoolName || 'TK Mutiara Bangsa'}</span>
-              <span className="font-display font-black text-[11px] text-yellow-400 tracking-wide uppercase">EduConnect Portal</span>
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <span className="font-display font-black text-[11px] text-yellow-400 tracking-wide uppercase">EduConnect Portal</span>
+                {isPremium && (
+                  <span className="bg-amber-400 text-amber-950 text-[8px] font-black uppercase px-1.5 py-0.5 rounded-full flex items-center gap-0.5 shadow-sm border border-amber-300">
+                    <Crown size={8} className="fill-amber-950 text-amber-950" />
+                    PREMIUM
+                  </span>
+                )}
+              </div>
             </div>
           </div>
-          <div className="relative">
-            <button className="p-2 bg-white/10 rounded-xl backdrop-blur-md relative hover:bg-white/20 transition-all">
-              <Bell size={18} />
-              <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-red-500 rounded-full border border-brand-blue"></span>
+          <div className="relative z-20 flex items-center gap-2">
+            <button
+              onClick={onReplayOnboarding}
+              className="p-2 bg-white/15 hover:bg-white/25 text-white rounded-xl backdrop-blur-md transition-all active:scale-95"
+              title="Panduan EduConnect"
+            >
+              <Sparkles size={18} className="text-yellow-300" />
             </button>
+            <NotificationInbox
+              notifications={notifications}
+              currentUser={currentUser}
+              onMarkAsRead={onMarkNotificationAsRead}
+              onMarkAllAsRead={onMarkAllNotificationsAsRead}
+              onDeleteNotification={onDeleteNotification}
+              onNavigateToTab={onNavigateToNotification}
+            />
+            <NotificationActivator />
           </div>
         </div>
 
@@ -457,6 +578,60 @@ export default function ParentDashboard({
               <span className="text-[9px] font-black uppercase tracking-widest text-rose-100 block">Fitur Baru</span>
               <h3 className="font-display font-black text-sm text-white">Perkembangan & Bimbingan</h3>
               <p className="text-[10px] text-rose-50 mt-0.5 font-medium leading-tight">Observasi guru & rekomendasi di rumah</p>
+            </div>
+          </div>
+          <div className="bg-white/20 text-white p-2 rounded-full backdrop-blur-md">
+            <ChevronRight size={16} />
+          </div>
+        </motion.div>
+
+        {/* Tabungan Siswa Banner/Button */}
+        <motion.div
+          whileHover={{ scale: 1.01 }}
+          whileTap={{ scale: 0.99 }}
+          onClick={() => setActiveModal('savings')}
+          className="bg-gradient-to-r from-sky-500 to-indigo-600 p-4 rounded-[2rem] text-white flex items-center justify-between cursor-pointer shadow-md"
+          id="parent-menu-savings"
+        >
+          <div className="flex items-center gap-4 text-left">
+            <div className="bg-white/20 p-2.5 rounded-2xl backdrop-blur-md text-white">
+              <svg className="w-6 h-6 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="5" width="20" height="14" rx="2" />
+                <path d="M16 11h4v2h-4z" />
+                <circle cx="12" cy="12" r="2.1" />
+              </svg>
+            </div>
+            <div>
+              <span className="text-[9px] font-black uppercase tracking-widest text-sky-100 block">Simpanan Sekolah</span>
+              <h3 className="font-display font-black text-sm text-white">Tabungan {currentStudent.name}</h3>
+              <p className="text-[10px] text-sky-50 mt-0.5 font-semibold leading-tight flex items-center gap-1">
+                Saldo Anda: <span className="text-yellow-300 font-extrabold">Rp {totalSavingsBalance.toLocaleString('id-ID')}</span>
+              </p>
+            </div>
+          </div>
+          <div className="bg-white/20 text-white p-2 rounded-full backdrop-blur-md">
+            <ChevronRight size={16} />
+          </div>
+        </motion.div>
+
+        {/* Jadwal Pelajaran Banner/Button */}
+        <motion.div
+          whileHover={{ scale: 1.01 }}
+          whileTap={{ scale: 0.99 }}
+          onClick={() => setActiveModal('jadwal')}
+          className="bg-gradient-to-r from-violet-500 via-fuchsia-500 to-pink-500 p-4 rounded-[2rem] text-white flex items-center justify-between cursor-pointer shadow-md"
+          id="parent-menu-jadwal"
+        >
+          <div className="flex items-center gap-4 text-left">
+            <div className="bg-white/20 p-2.5 rounded-2xl backdrop-blur-md text-white">
+              <BookOpen size={24} />
+            </div>
+            <div>
+              <span className="text-[9px] font-black uppercase tracking-widest text-pink-100 block">E-Jadwal Akademik</span>
+              <h3 className="font-display font-black text-sm text-white">Jadwal Pelajaran {currentStudent.name}</h3>
+              <p className="text-[10px] text-pink-50 mt-0.5 font-semibold leading-tight flex items-center gap-1">
+                Kelas {currentStudent.class} • Ketuk untuk melihat jadwal kelas
+              </p>
             </div>
           </div>
           <div className="bg-white/20 text-white p-2 rounded-full backdrop-blur-md">
@@ -1058,6 +1233,199 @@ export default function ParentDashboard({
                   <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100/50 text-xs text-slate-500 leading-normal flex items-start gap-2">
                     <Sparkles className="text-brand-accent shrink-0 mt-0.5" size={16} />
                     <span>Silakan hubungi Wali Kelas jika terdapat pertanyaan terkait edaran atau pengumuman ini.</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Modal Content - TABUNGAN SISWA */}
+              {activeModal === 'savings' && (
+                <div className="space-y-5">
+                  <div className="flex items-center gap-3">
+                    <div className="bg-sky-500 text-white p-2.5 rounded-2xl">
+                      <svg className="w-5 h-5 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="2" y="5" width="20" height="14" rx="2" />
+                        <path d="M16 11h4v2h-4z" />
+                        <circle cx="12" cy="12" r="2.1" />
+                      </svg>
+                    </div>
+                    <div>
+                      <h3 className="font-display font-extrabold text-lg text-slate-950">Tabungan Anak</h3>
+                      <p className="text-xs text-slate-400">Total saldo simpanan & riwayat transaksi {currentStudent.name}</p>
+                    </div>
+                  </div>
+
+                  {/* Saldo Utama Card */}
+                  <div className="bg-gradient-to-r from-sky-500 to-indigo-600 text-white p-5 rounded-3xl flex items-center justify-between shadow-md relative overflow-hidden">
+                    <div className="absolute top-[-30px] right-[-30px] w-32 h-32 rounded-full bg-white/10 blur-xl"></div>
+                    <div className="space-y-1.5 relative z-10">
+                      <span className="text-[10px] text-sky-100 font-bold uppercase tracking-wider block">Saldo Tabungan Saat Ini</span>
+                      <h4 className="font-display font-black text-3xl text-yellow-300">
+                        Rp {totalSavingsBalance.toLocaleString('id-ID')}
+                      </h4>
+                      <p className="text-[10px] text-sky-100/80 font-medium">Disimpan aman dan dicatat oleh Guru Kelas</p>
+                    </div>
+                  </div>
+
+                  {/* History List */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">Riwayat Transaksi</h4>
+                      <span className="text-[10px] text-slate-400 font-bold">{savingsList.length} Transaksi</span>
+                    </div>
+
+                    {savingsList.length === 0 ? (
+                      <div className="text-center py-10 bg-slate-50 rounded-2xl border border-slate-100 text-slate-400 text-xs font-medium space-y-2">
+                        <svg className="w-8 h-8 text-slate-300 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                        </svg>
+                        <p>Belum ada riwayat transaksi tabungan.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2 max-h-[350px] overflow-y-auto pr-1 no-scrollbar">
+                        {savingsList.map((tx) => (
+                          <div 
+                            key={tx.id} 
+                            className="bg-slate-50 p-3.5 rounded-2xl border border-slate-100/80 flex items-center justify-between transition-all hover:bg-slate-100/50"
+                          >
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-1.5">
+                                <span className={`text-[8px] font-black px-2 py-0.5 rounded-md ${
+                                  tx.type === 'setor' 
+                                    ? 'bg-emerald-100 text-emerald-800' 
+                                    : 'bg-rose-100 text-rose-800'
+                                }`}>
+                                  {tx.type === 'setor' ? 'SETOR' : 'PENARIKAN'}
+                                </span>
+                                <span className="text-[10px] text-slate-400 font-mono font-bold">
+                                  {new Date(tx.date).toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' })}
+                                </span>
+                              </div>
+                              <h5 className="font-display font-bold text-xs text-slate-800 leading-normal">{tx.description || (tx.type === 'setor' ? 'Setoran Tabungan' : 'Penarikan Tabungan')}</h5>
+                              <p className="text-[9px] text-slate-400 font-medium">Oleh: {tx.teacherName}</p>
+                            </div>
+                            <div className="text-right">
+                              <span className={`text-xs font-black block ${
+                                tx.type === 'setor' ? 'text-emerald-600' : 'text-rose-600'
+                              }`}>
+                                {tx.type === 'setor' ? '+' : '-'} Rp {tx.amount.toLocaleString('id-ID')}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Modal Content - JADWAL PELAJARAN */}
+              {activeModal === 'jadwal' && (
+                <div className="space-y-5">
+                  <div className="flex items-center gap-3">
+                    <div className="bg-gradient-to-tr from-violet-500 to-fuchsia-500 text-white p-2.5 rounded-2xl shadow-sm">
+                      <BookOpen size={20} />
+                    </div>
+                    <div>
+                      <h3 className="font-display font-extrabold text-lg text-slate-950">Jadwal Pelajaran</h3>
+                      <p className="text-xs text-slate-400">Jadwal pelajaran untuk {currentStudent.name} ({currentStudent.class})</p>
+                    </div>
+                  </div>
+
+                  {/* Day Tabs */}
+                  <div className="flex gap-1.5 overflow-x-auto py-1 no-scrollbar select-none">
+                    {(['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'] as const).map((day) => {
+                      const isSelected = selectedDay === day;
+                      const daySchedulesCount = schedules.filter(s => s.day === day).length;
+                      return (
+                        <button
+                          key={day}
+                          onClick={() => setSelectedDay(day)}
+                          className={`px-4 py-2.5 rounded-2xl text-xs font-bold transition-all shrink-0 flex items-center gap-1.5 focus:outline-none ${
+                            isSelected
+                              ? 'bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white shadow-md shadow-fuchsia-100'
+                              : 'bg-slate-100 hover:bg-slate-200/70 text-slate-600'
+                          }`}
+                        >
+                          {day}
+                          {daySchedulesCount > 0 && (
+                            <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-extrabold ${
+                              isSelected ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-600'
+                            }`}>
+                              {daySchedulesCount}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* List of Schedules for Selected Day */}
+                  <div className="space-y-3.5">
+                    {(() => {
+                      const filteredSchedules = schedules.filter(s => s.day === selectedDay);
+                      if (filteredSchedules.length === 0) {
+                        return (
+                          <div className="text-center py-12 bg-slate-50 rounded-3xl border border-dashed border-slate-200 text-slate-400 text-xs font-medium space-y-2">
+                            <Clock className="w-8 h-8 text-slate-300 mx-auto" />
+                            <p className="font-semibold text-slate-500">Tidak ada pelajaran hari {selectedDay}</p>
+                            <p className="text-[10px] text-slate-400">Nikmati waktu istirahat atau belajar mandiri!</p>
+                          </div>
+                        );
+                      }
+
+                      const COLOR_MAPS: Record<string, { bg: string, border: string, text: string, iconBg: string, icon: string, accent: string }> = {
+                        indigo: { bg: 'bg-indigo-50/80 hover:bg-indigo-50', border: 'border-indigo-100', text: 'text-indigo-900', iconBg: 'bg-indigo-100/80', icon: 'text-indigo-600', accent: 'indigo' },
+                        emerald: { bg: 'bg-emerald-50/80 hover:bg-emerald-50', border: 'border-emerald-100', text: 'text-emerald-900', iconBg: 'bg-emerald-100/80', icon: 'text-emerald-600', accent: 'emerald' },
+                        amber: { bg: 'bg-amber-50/80 hover:bg-amber-50', border: 'border-amber-100', text: 'text-amber-900', iconBg: 'bg-amber-100/80', icon: 'text-amber-600', accent: 'amber' },
+                        rose: { bg: 'bg-rose-50/80 hover:bg-rose-50', border: 'border-rose-100', text: 'text-rose-900', iconBg: 'bg-rose-100/80', icon: 'text-rose-600', accent: 'rose' },
+                        sky: { bg: 'bg-sky-50/80 hover:bg-sky-50', border: 'border-sky-100', text: 'text-sky-900', iconBg: 'bg-sky-100/80', icon: 'text-sky-600', accent: 'sky' },
+                        violet: { bg: 'bg-violet-50/80 hover:bg-violet-50', border: 'border-violet-100', text: 'text-violet-900', iconBg: 'bg-violet-100/80', icon: 'text-violet-600', accent: 'violet' },
+                        pink: { bg: 'bg-pink-50/80 hover:bg-pink-50', border: 'border-pink-100', text: 'text-pink-900', iconBg: 'bg-pink-100/80', icon: 'text-pink-600', accent: 'pink' }
+                      };
+
+                      return (
+                        <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1 no-scrollbar">
+                          {filteredSchedules.map((item) => {
+                            const map = COLOR_MAPS[item.color] || COLOR_MAPS.indigo;
+                            return (
+                              <motion.div
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                key={item.id}
+                                className={`p-4 rounded-3xl border ${map.bg} ${map.border} flex flex-col gap-3 transition-all relative overflow-hidden group shadow-sm`}
+                              >
+                                <div className="flex items-start justify-between">
+                                  <div className="space-y-1 pl-1">
+                                    <h4 className={`font-display font-black text-sm ${map.text}`}>{item.subject}</h4>
+                                    <div className="flex items-center gap-1.5 text-slate-500 text-xs">
+                                      <Clock size={12} className={map.icon} />
+                                      <span className="font-semibold text-[11px]">{item.startTime} - {item.endTime}</span>
+                                    </div>
+                                  </div>
+                                  
+                                  {item.room && (
+                                    <span className="text-[10px] font-bold bg-white/70 border border-slate-100 px-2.5 py-1 rounded-xl text-slate-600 flex items-center gap-1">
+                                      <MapPin size={10} className="text-slate-400" />
+                                      {item.room}
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="border-t border-slate-200/40 pt-2.5 flex items-center gap-2">
+                                  <div className={`w-6 h-6 rounded-lg ${map.iconBg} flex items-center justify-center shrink-0`}>
+                                    <span className={`text-[10px] font-black ${map.icon}`}>🏫</span>
+                                  </div>
+                                  <div className="text-left">
+                                    <span className="text-[9px] text-slate-400 block leading-none">Guru Pengampu:</span>
+                                    <span className="text-xs font-bold text-slate-700 block mt-0.5">{item.teacherName}</span>
+                                  </div>
+                                </div>
+                              </motion.div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
               )}

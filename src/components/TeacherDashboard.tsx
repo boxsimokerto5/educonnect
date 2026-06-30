@@ -1,7 +1,11 @@
-import React, { useState } from 'react';
-import { Student, EPermit, Grade, CalendarEvent, Announcement } from '../types';
+import React, { useState, useEffect } from 'react';
+import { Student, EPermit, Grade, CalendarEvent, Announcement, Schedule, AppNotification, User as AuthUser } from '../types';
+import { collection, onSnapshot, query, where, doc, setDoc, deleteDoc } from 'firebase/firestore';
+import { db } from '../firebase';
 import { motion, AnimatePresence } from 'motion/react';
 import CalendarClockWidget from './CalendarClockWidget';
+import NotificationActivator from './NotificationActivator';
+import NotificationInbox from './NotificationInbox';
 import {
   Bell,
   CheckCircle,
@@ -21,7 +25,12 @@ import {
   Users,
   AlertTriangle,
   Smile,
-  Wallet
+  Wallet,
+  Sparkles,
+  Clock,
+  MapPin,
+  BookOpen,
+  Crown
 } from 'lucide-react';
 
 interface TeacherDashboardProps {
@@ -29,7 +38,7 @@ interface TeacherDashboardProps {
   permits: EPermit[];
   onGoToApproval: () => void;
   onGoToKonseling?: () => void;
-  onGoToFinances?: () => void;
+  onGoToFinances?: (tab?: 'approval' | 'create' | 'status' | 'savings') => void;
   onUpdateAttendance: (studentId: string, status: Student['attendanceToday'], time?: string) => void;
   onAddGrade: (studentId: string, grade: Grade) => void;
   teacherName?: string;
@@ -52,6 +61,14 @@ interface TeacherDashboardProps {
   onDeleteCalendarEvent?: (id: string) => void;
   schoolLogoUrl?: string;
   schoolName?: string;
+  onReplayOnboarding?: () => void;
+  isPremium?: boolean;
+  notifications?: AppNotification[];
+  currentUser?: AuthUser | null;
+  onMarkNotificationAsRead?: (id: string) => void;
+  onMarkAllNotificationsAsRead?: () => void;
+  onDeleteNotification?: (id: string) => void;
+  onNavigateToNotification?: (type: string, relatedId?: string) => void;
 }
 
 export default function TeacherDashboard({
@@ -72,7 +89,15 @@ export default function TeacherDashboard({
   onAddCalendarEvent,
   onDeleteCalendarEvent,
   schoolLogoUrl,
-  schoolName
+  schoolName,
+  onReplayOnboarding = () => {},
+  isPremium,
+  notifications = [],
+  currentUser = null,
+  onMarkNotificationAsRead = () => {},
+  onMarkAllNotificationsAsRead = () => {},
+  onDeleteNotification = () => {},
+  onNavigateToNotification = () => {}
 }: TeacherDashboardProps) {
   const [showAttendanceModal, setShowAttendanceModal] = useState(false);
   const [showGradeModal, setShowGradeModal] = useState(false);
@@ -80,6 +105,92 @@ export default function TeacherDashboard({
   const [showStudentModal, setShowStudentModal] = useState(false);
   const [showStudentListModal, setShowStudentListModal] = useState(false);
   const [showCalendarModal, setShowCalendarModal] = useState(false);
+
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [selectedDay, setSelectedDay] = useState<'Senin' | 'Selasa' | 'Rabu' | 'Kamis' | 'Jumat' | 'Sabtu'>('Senin');
+
+  // New Schedule states
+  const [schedDay, setSchedDay] = useState<'Senin' | 'Selasa' | 'Rabu' | 'Kamis' | 'Jumat' | 'Sabtu'>('Senin');
+  const [schedSubject, setSchedSubject] = useState('');
+  const [schedStartTime, setSchedStartTime] = useState('08:00');
+  const [schedEndTime, setSchedEndTime] = useState('09:30');
+  const [schedRoom, setSchedRoom] = useState('');
+  const [schedTeacherName, setSchedTeacherName] = useState(teacherName);
+  const [schedColor, setSchedColor] = useState('indigo');
+  const [schedSuccessMsg, setSchedSuccessMsg] = useState('');
+  const [isAddingSched, setIsAddingSched] = useState(false);
+
+  useEffect(() => {
+    const dayNames = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+    const todayName = dayNames[new Date().getDay()];
+    if (todayName !== 'Minggu') {
+      setSelectedDay(todayName as any);
+      setSchedDay(todayName as any);
+    } else {
+      setSelectedDay('Senin');
+      setSchedDay('Senin');
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!className) return;
+    const sId = students[0]?.schoolId || 'school-1';
+    const q = query(
+      collection(db, 'schedules'),
+      where('schoolId', '==', sId),
+      where('className', '==', className)
+    );
+    const unsub = onSnapshot(q, (snapshot) => {
+      const list: Schedule[] = [];
+      snapshot.forEach((doc) => {
+        list.push({ id: doc.id, ...doc.data() } as Schedule);
+      });
+      list.sort((a, b) => a.startTime.localeCompare(b.startTime));
+      setSchedules(list);
+    }, (error) => {
+      console.error("Error loading class schedules:", error);
+    });
+    return () => unsub();
+  }, [className, students]);
+
+  const handleAddScheduleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!schedSubject.trim()) return;
+
+    const sId = students[0]?.schoolId || 'school-1';
+    const newSched: Schedule = {
+      id: 'sched-' + Date.now() + Math.random().toString(36).substr(2, 5),
+      className,
+      day: schedDay,
+      subject: schedSubject,
+      startTime: schedStartTime,
+      endTime: schedEndTime,
+      room: schedRoom || undefined,
+      teacherName: schedTeacherName || teacherName,
+      schoolId: sId,
+      color: schedColor
+    };
+
+    try {
+      await setDoc(doc(db, 'schedules', newSched.id), newSched);
+      setSchedSuccessMsg('Jadwal pelajaran berhasil ditambahkan!');
+      setSchedSubject('');
+      setSchedRoom('');
+      setIsAddingSched(false);
+      setTimeout(() => setSchedSuccessMsg(''), 3000);
+    } catch (err) {
+      console.error("Error adding schedule:", err);
+    }
+  };
+
+  const handleDeleteSchedule = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, 'schedules', id));
+    } catch (err) {
+      console.error("Error deleting schedule:", err);
+    }
+  };
 
   // New Student Entry State
   const [newStudentName, setNewStudentName] = useState('');
@@ -279,13 +390,15 @@ export default function TeacherDashboard({
   return (
     <div className="space-y-6 pb-20">
       {/* Curved Dark Header Backdrop */}
-      <div className="bg-brand-blue text-white rounded-b-[2.5rem] px-5 pt-8 pb-12 relative overflow-hidden">
-        {/* Subtle decorative shapes */}
-        <div className="absolute top-[-40px] left-[-40px] w-44 h-44 rounded-full bg-slate-800 opacity-20 blur-2xl"></div>
-        <div className="absolute bottom-[-20px] right-[-20px] w-36 h-36 rounded-full bg-slate-800 opacity-30 blur-xl"></div>
+      <div className="bg-brand-blue text-white rounded-b-[2.5rem] px-5 pt-8 pb-12 relative">
+        {/* Subtle decorative shapes bounded inside an overflow-hidden container */}
+        <div className="absolute inset-0 rounded-b-[2.5rem] overflow-hidden pointer-events-none z-0">
+          <div className="absolute top-[-40px] left-[-40px] w-44 h-44 rounded-full bg-slate-800 opacity-20 blur-2xl"></div>
+          <div className="absolute bottom-[-20px] right-[-20px] w-36 h-36 rounded-full bg-slate-800 opacity-30 blur-xl"></div>
+        </div>
 
         {/* Brand & Notifications Bar */}
-        <div className="flex items-center justify-between mb-6 relative z-10">
+        <div className="flex items-center justify-between mb-6 relative z-50">
           <div className="flex items-center gap-2.5">
             {schoolLogoUrl ? (
               <div className="w-10 h-10 rounded-xl bg-white p-1 flex items-center justify-center overflow-hidden shadow-md shrink-0">
@@ -303,20 +416,38 @@ export default function TeacherDashboard({
               <span className="font-display font-black text-[11px] text-yellow-400 tracking-wide uppercase">EduConnect Portal</span>
             </div>
           </div>
-          <div className="relative">
-            <button className="p-2 bg-white/10 rounded-xl backdrop-blur-md relative hover:bg-white/20 transition-all">
-              <Bell size={18} />
-              {pendingPermitsCount > 0 && (
-                <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-red-500 rounded-full border border-brand-blue animate-pulse"></span>
-              )}
+          <div className="relative z-20 flex items-center gap-2">
+            <button
+              onClick={onReplayOnboarding}
+              className="p-2 bg-white/15 hover:bg-white/25 text-white rounded-xl backdrop-blur-md transition-all active:scale-95"
+              title="Panduan EduConnect"
+            >
+              <Sparkles size={18} className="text-yellow-300" />
             </button>
+            <NotificationInbox
+              notifications={notifications}
+              currentUser={currentUser}
+              onMarkAsRead={onMarkNotificationAsRead}
+              onMarkAllAsRead={onMarkAllNotificationsAsRead}
+              onDeleteNotification={onDeleteNotification}
+              onNavigateToTab={onNavigateToNotification}
+            />
+            <NotificationActivator />
           </div>
         </div>
 
         {/* Greeting */}
         <div className="relative z-10">
-          <span className="text-xs text-slate-300 block">Wali Kelas {className}</span>
-          <h1 className="font-display font-bold text-2xl tracking-tight mt-0.5">Halo, {teacherName}!</h1>
+          <div className="flex items-center gap-2 mb-0.5">
+            <span className="text-xs text-slate-300">Wali Kelas {className}</span>
+            {isPremium && (
+              <span className="bg-amber-400/20 text-amber-300 border border-amber-400/30 text-[8px] font-bold uppercase px-1.5 py-0.5 rounded-full flex items-center gap-0.5 shadow-sm">
+                <Crown size={8} className="fill-amber-300 text-amber-300 animate-bounce" />
+                PREMIUM
+              </span>
+            )}
+          </div>
+          <h1 className="font-display font-bold text-2xl tracking-tight">Halo, {teacherName}!</h1>
           <p className="text-xs text-slate-300 mt-1">{schoolName || 'Mutiara Bangsa Kindergarten'} • HP Mode</p>
         </div>
       </div>
@@ -442,6 +573,38 @@ export default function TeacherDashboard({
               <div>
                 <h4 className="font-display font-bold text-xs text-slate-800 leading-tight">SPP & Keuangan</h4>
                 <p className="text-[9px] text-slate-400 mt-0.5 leading-tight">Buat tagihan & persetujuan</p>
+              </div>
+            </button>
+
+            <button
+              onClick={() => onGoToFinances?.('savings')}
+              className="bg-slate-50 hover:bg-slate-100 border border-slate-100 p-3.5 rounded-2xl text-left flex flex-col justify-between transition-all group focus:outline-none min-h-[135px] w-[115px] sm:w-[130px] flex-shrink-0 snap-start"
+              id="teacher-action-savings"
+            >
+              <div className="bg-sky-100 text-sky-600 p-2 rounded-xl w-fit mb-3 group-hover:scale-110 transition-transform">
+                <svg className="w-4 h-4 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="5" width="20" height="14" rx="2" />
+                  <path d="M16 11h4v2h-4z" />
+                  <circle cx="12" cy="12" r="2.1" />
+                </svg>
+              </div>
+              <div>
+                <h4 className="font-display font-bold text-xs text-slate-800 leading-tight">Tabungan Siswa</h4>
+                <p className="text-[9px] text-slate-400 mt-0.5 leading-tight">Catat setor & tarik tunai</p>
+              </div>
+            </button>
+
+            <button
+              onClick={() => setShowScheduleModal(true)}
+              className="bg-slate-50 hover:bg-slate-100 border border-slate-100 p-3.5 rounded-2xl text-left flex flex-col justify-between transition-all group focus:outline-none min-h-[135px] w-[115px] sm:w-[130px] flex-shrink-0 snap-start"
+              id="teacher-action-schedules"
+            >
+              <div className="bg-violet-100 text-violet-600 p-2 rounded-xl w-fit mb-3 group-hover:scale-110 transition-transform">
+                <BookOpen size={16} />
+              </div>
+              <div>
+                <h4 className="font-display font-bold text-xs text-slate-800 leading-tight">Jadwal Kelas</h4>
+                <p className="text-[9px] text-slate-400 mt-0.5 leading-tight">Atur jadwal pelajaran</p>
               </div>
             </button>
           </div>
@@ -1455,6 +1618,280 @@ export default function TeacherDashboard({
                   </form>
                 </div>
               )}
+            </motion.div>
+          </div>
+        )}
+
+        {/* MODAL: JADWAL PELAJARAN MANAGEMENT */}
+        {showScheduleModal && (
+          <div className="fixed inset-0 bg-slate-950/40 backdrop-blur-md z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+            <motion.div
+              initial={{ opacity: 0, y: 100 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 100 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 220 }}
+              className="bg-slate-50 w-full sm:max-w-xl h-[85vh] sm:h-[80vh] sm:rounded-[2.5rem] rounded-t-[2.5rem] p-6 shadow-2xl relative overflow-y-auto no-scrollbar flex flex-col gap-5 border border-slate-100"
+              id="schedule-manager-modal"
+            >
+              <button
+                onClick={() => {
+                  setShowScheduleModal(false);
+                  setSchedSuccessMsg('');
+                }}
+                className="absolute top-6 right-6 p-2 bg-slate-200 hover:bg-slate-300 text-slate-600 rounded-full transition-all z-10 focus:outline-none"
+                id="close-schedule-modal-btn"
+              >
+                <X size={18} />
+              </button>
+
+              <div className="pr-10 shrink-0 text-left">
+                <h3 className="font-display font-black text-xl text-slate-950 flex items-center gap-2">
+                  <span className="p-1.5 bg-violet-100 text-violet-600 rounded-xl">
+                    <BookOpen size={20} />
+                  </span>
+                  Atur Jadwal Pelajaran
+                </h3>
+                <p className="text-xs text-slate-400 mt-1.5 font-medium leading-relaxed">
+                  Guru kelas dapat menyusun jadwal pelajaran {className}. Semua perubahan akan otomatis muncul di aplikasi wali murid.
+                </p>
+              </div>
+
+              {/* Day Tabs */}
+              <div className="flex gap-1.5 overflow-x-auto py-1 no-scrollbar select-none shrink-0">
+                {(['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'] as const).map((day) => {
+                  const isSelected = selectedDay === day;
+                  const daySchedulesCount = schedules.filter(s => s.day === day).length;
+                  return (
+                    <button
+                      key={day}
+                      onClick={() => setSelectedDay(day)}
+                      className={`px-4 py-2.5 rounded-2xl text-xs font-bold transition-all shrink-0 flex items-center gap-1.5 focus:outline-none ${
+                        isSelected
+                          ? 'bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white shadow-md shadow-fuchsia-100'
+                          : 'bg-white border border-slate-100 hover:bg-slate-100 text-slate-600 shadow-sm'
+                      }`}
+                    >
+                      {day}
+                      {daySchedulesCount > 0 && (
+                        <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-extrabold ${
+                          isSelected ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-500'
+                        }`}>
+                          {daySchedulesCount}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Toggle to Add Form */}
+              <div className="flex items-center justify-between shrink-0">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">Jadwal Pelajaran Hari {selectedDay}</h4>
+                <button
+                  type="button"
+                  onClick={() => setIsAddingSched(!isAddingSched)}
+                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold transition-all focus:outline-none ${
+                    isAddingSched 
+                      ? 'bg-rose-50 text-rose-600 border border-rose-100' 
+                      : 'bg-violet-50 text-violet-600 border border-violet-100'
+                  }`}
+                >
+                  <Plus size={14} className={isAddingSched ? 'rotate-45 transition-transform' : 'transition-transform'} />
+                  <span>{isAddingSched ? 'Batal' : 'Tambah Mapel'}</span>
+                </button>
+              </div>
+
+              {/* ADD SCHEDULE FORM BLOCK */}
+              <AnimatePresence>
+                {isAddingSched && (
+                  <motion.form
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    onSubmit={handleAddScheduleSubmit}
+                    className="bg-white p-5 rounded-3xl border border-slate-100 shadow-sm space-y-4 shrink-0 overflow-hidden text-left"
+                  >
+                    <div className="flex items-center gap-2 text-violet-600">
+                      <PlusCircle size={18} />
+                      <h4 className="font-display font-bold text-xs text-slate-900 uppercase tracking-wider">Tambah Pelajaran Baru</h4>
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider block mb-1">Mata Pelajaran</label>
+                      <input
+                        type="text"
+                        placeholder="Contoh: Menggambar & Mewarnai, Mengaji, Istirahat..."
+                        value={schedSubject}
+                        onChange={(e) => setSchedSubject(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-100 text-xs px-3.5 py-3 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-500/20 text-slate-700 placeholder-slate-400 font-medium"
+                        required
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider block mb-1">Jam Mulai</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. 08:00"
+                          value={schedStartTime}
+                          onChange={(e) => setSchedStartTime(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-100 text-xs px-3.5 py-3 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-500/20 text-slate-700 font-semibold text-center"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider block mb-1">Jam Selesai</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. 09:30"
+                          value={schedEndTime}
+                          onChange={(e) => setSchedEndTime(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-100 text-xs px-3.5 py-3 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-500/20 text-slate-700 font-semibold text-center"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider block mb-1">Ruangan (Opsional)</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. Sentra Balok / Kelas Utama"
+                          value={schedRoom}
+                          onChange={(e) => setSchedRoom(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-100 text-xs px-3.5 py-3 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-500/20 text-slate-700 font-medium"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider block mb-1">Guru Pengajar</label>
+                        <input
+                          type="text"
+                          placeholder="Nama Guru Pengampu"
+                          value={schedTeacherName}
+                          onChange={(e) => setSchedTeacherName(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-100 text-xs px-3.5 py-3 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-500/20 text-slate-700 font-medium"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider block mb-1.5">Warna Tampilan Kartu</label>
+                      <div className="flex gap-2 flex-wrap">
+                        {(['indigo', 'emerald', 'amber', 'rose', 'sky', 'violet', 'pink'] as const).map((color) => {
+                          const isColorSelected = schedColor === color;
+                          const bgColors: Record<string, string> = {
+                            indigo: 'bg-indigo-500',
+                            emerald: 'bg-emerald-500',
+                            amber: 'bg-amber-500',
+                            rose: 'bg-rose-500',
+                            sky: 'bg-sky-500',
+                            violet: 'bg-violet-500',
+                            pink: 'bg-pink-500'
+                          };
+                          return (
+                            <button
+                              key={color}
+                              type="button"
+                              onClick={() => setSchedColor(color)}
+                              className={`w-6 h-6 rounded-full ${bgColors[color]} relative transition-all focus:outline-none ${
+                                isColorSelected ? 'ring-2 ring-offset-2 ring-violet-600 scale-110' : 'hover:scale-105'
+                              }`}
+                            >
+                              {isColorSelected && (
+                                <span className="absolute inset-0 flex items-center justify-center text-white text-[10px]">✓</span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="w-full bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:opacity-95 text-white font-display font-bold text-xs py-3 rounded-xl transition-all shadow-md focus:outline-none"
+                    >
+                      Simpan Jadwal Baru
+                    </button>
+                  </motion.form>
+                )}
+              </AnimatePresence>
+
+              {schedSuccessMsg && (
+                <motion.div
+                  initial={{ opacity: 0, y: -5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="bg-emerald-50 border border-emerald-100 text-emerald-700 text-xs py-2.5 px-3 rounded-xl font-semibold shrink-0 text-left"
+                >
+                  {schedSuccessMsg}
+                </motion.div>
+              )}
+
+              {/* LIST OF EXISTING SCHEDULES */}
+              <div className="flex-1 space-y-3.5">
+                {(() => {
+                  const filteredSchedules = schedules.filter(s => s.day === selectedDay);
+                  if (filteredSchedules.length === 0) {
+                    return (
+                      <div className="text-center py-12 bg-white rounded-3xl border border-dashed border-slate-200 text-slate-400 text-xs font-medium space-y-2">
+                        <Clock className="w-8 h-8 text-slate-300 mx-auto" />
+                        <p className="font-semibold text-slate-500">Tidak ada pelajaran hari {selectedDay}</p>
+                        <p className="text-[10px] text-slate-400 text-center">Tekan tombol 'Tambah Mapel' di atas untuk menyusun jadwal baru.</p>
+                      </div>
+                    );
+                  }
+
+                  const COLOR_MAPS: Record<string, { bg: string, border: string, text: string, iconBg: string, icon: string }> = {
+                    indigo: { bg: 'bg-indigo-50/70', border: 'border-indigo-100', text: 'text-indigo-900', iconBg: 'bg-indigo-100/80', icon: 'text-indigo-600' },
+                    emerald: { bg: 'bg-emerald-50/70', border: 'border-emerald-100', text: 'text-emerald-900', iconBg: 'bg-emerald-100/80', icon: 'text-emerald-600' },
+                    amber: { bg: 'bg-amber-50/70', border: 'border-amber-100', text: 'text-amber-900', iconBg: 'bg-amber-100/80', icon: 'text-amber-600' },
+                    rose: { bg: 'bg-rose-50/70', border: 'border-rose-100', text: 'text-rose-900', iconBg: 'bg-rose-100/80', icon: 'text-rose-600' },
+                    sky: { bg: 'bg-sky-50/70', border: 'border-sky-100', text: 'text-sky-900', iconBg: 'bg-sky-100/80', icon: 'text-sky-600' },
+                    violet: { bg: 'bg-violet-50/70', border: 'border-violet-100', text: 'text-violet-900', iconBg: 'bg-violet-100/80', icon: 'text-violet-600' },
+                    pink: { bg: 'bg-pink-50/70', border: 'border-pink-100', text: 'text-pink-900', iconBg: 'bg-pink-100/80', icon: 'text-pink-600' }
+                  };
+
+                  return (
+                    <div className="space-y-3 pb-6">
+                      {filteredSchedules.map((item) => {
+                        const map = COLOR_MAPS[item.color] || COLOR_MAPS.indigo;
+                        return (
+                          <div
+                            key={item.id}
+                            className={`p-4 rounded-3xl border bg-white border-slate-100 flex items-center justify-between transition-all group shadow-sm`}
+                          >
+                            <div className="flex gap-3 items-center text-left">
+                              <div className={`w-10 h-10 rounded-2xl ${map.iconBg} flex items-center justify-center shrink-0`}>
+                                <span className="text-sm">🏫</span>
+                              </div>
+                              <div className="space-y-0.5 text-left">
+                                <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-md ${map.bg} ${map.text}`}>
+                                  {item.startTime} - {item.endTime}
+                                </span>
+                                <h4 className="font-display font-black text-xs text-slate-800 leading-normal">{item.subject}</h4>
+                                <p className="text-[10px] text-slate-400 font-semibold leading-none flex items-center gap-1">
+                                  {item.teacherName} {item.room && `• Ruang: ${item.room}`}
+                                </p>
+                              </div>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteSchedule(item.id)}
+                              className="p-2.5 bg-slate-50 hover:bg-rose-50 text-slate-400 hover:text-rose-600 rounded-xl transition-all focus:outline-none shrink-0"
+                              title="Hapus Jadwal"
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
             </motion.div>
           </div>
         )}

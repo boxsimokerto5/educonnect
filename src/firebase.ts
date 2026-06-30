@@ -14,7 +14,7 @@ import {
 } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 import config from '../firebase-applet-config.json';
-import { Student, EPermit, CalendarEvent, Announcement, LiaisonEntry, User, Grade, LiaisonMessage, CounselingRecord, Bill, School } from './types';
+import { Student, EPermit, CalendarEvent, Announcement, LiaisonEntry, User, Grade, LiaisonMessage, CounselingRecord, Bill, School, SavingsTransaction, Schedule, AppNotification } from './types';
 import { INITIAL_STUDENTS, INITIAL_PERMITS, CALENDAR_EVENTS, ANNOUNCEMENTS, INITIAL_LIAISON_ENTRIES, INITIAL_COUNSELING_RECORDS } from './data';
 
 const app = initializeApp(config);
@@ -45,6 +45,7 @@ export async function seedInitialData() {
         await setDoc(doc(db, 'users', item.id), item);
       }
     }
+    await seedInitialSchedules();
     console.log('[Firebase] Initial data seeding complete or already populated.');
   } catch (error) {
     console.error('[Firebase] Error seeding initial data:', error);
@@ -61,8 +62,26 @@ export async function dbUpdateSchoolStatus(schoolId: string, status: 'active' | 
   await updateDoc(doc(db, 'schools', schoolId), { status });
 }
 
+export async function dbUpdateSchoolPremiumStatus(schoolId: string, isPremium: boolean) {
+  await updateDoc(doc(db, 'schools', schoolId), { isPremium });
+}
+
 export async function dbUpdateSchoolLogo(schoolId: string, logoBase64: string) {
   await updateDoc(doc(db, 'schools', schoolId), { logoUrl: logoBase64 });
+}
+
+export async function dbUpdateSchoolPaymentSettings(
+  schoolId: string,
+  settings: {
+    bankAccountName?: string;
+    bankAccountType?: string;
+    bankAccountNumber?: string;
+    paymentGatewayType?: 'manual' | 'midtrans' | 'duitku' | 'other';
+    paymentGatewayApiKey?: string;
+    paymentGatewayMerchantCode?: string;
+  }
+) {
+  await updateDoc(doc(db, 'schools', schoolId), settings);
 }
 
 export async function dbUpdateSchoolAndYayasan(
@@ -355,10 +374,19 @@ export async function dbDeleteCounselingRecord(recordId: string) {
   await deleteDoc(doc(db, 'counselingRecords', recordId));
 }
 
+// 19. Savings (Tabungan) Transactions
+export async function dbAddSavingsTransaction(tx: SavingsTransaction) {
+  await setDoc(doc(db, 'savings', tx.id), tx);
+}
+
+export async function dbDeleteSavingsTransaction(txId: string) {
+  await deleteDoc(doc(db, 'savings', txId));
+}
+
 // 16. Reset Database to initial simulation condition
 export async function dbResetToInitial() {
   // Delete all existing documents in these collections first, then seed
-  const collectionsToReset = ['schools', 'students', 'permits', 'announcements', 'calendarEvents', 'liaisonEntries', 'users', 'counselingRecords'];
+  const collectionsToReset = ['schools', 'students', 'permits', 'announcements', 'calendarEvents', 'liaisonEntries', 'users', 'counselingRecords', 'savings', 'schedules', 'notifications'];
   for (const cName of collectionsToReset) {
     const snapshot = await getDocs(collection(db, cName));
     for (const d of snapshot.docs) {
@@ -366,4 +394,203 @@ export async function dbResetToInitial() {
     }
   }
   await seedInitialData();
+  await seedInitialSchedules();
 }
+
+// 20. Schedule Operations
+export async function dbGetSchedules(schoolId: string, className?: string): Promise<Schedule[]> {
+  try {
+    const collRef = collection(db, 'schedules');
+    let q;
+    if (className) {
+      q = query(collRef, where('schoolId', '==', schoolId), where('className', '==', className));
+    } else {
+      q = query(collRef, where('schoolId', '==', schoolId));
+    }
+    const snap = await getDocs(q);
+    const list: Schedule[] = [];
+    snap.forEach((d) => {
+      list.push({ id: d.id, ...(d.data() as any) } as Schedule);
+    });
+    return list;
+  } catch (error) {
+    console.error('[Firebase] Error getting schedules:', error);
+    return [];
+  }
+}
+
+export async function dbAddSchedule(schedule: Schedule) {
+  await setDoc(doc(db, 'schedules', schedule.id), schedule);
+}
+
+export async function dbDeleteSchedule(scheduleId: string) {
+  await deleteDoc(doc(db, 'schedules', scheduleId));
+}
+
+async function seedInitialSchedules() {
+  try {
+    const snapshot = await getDocs(collection(db, 'schedules'));
+    if (snapshot.empty) {
+      console.log('[Firebase] Seeding initial schedules');
+      const initialSchedules: Schedule[] = [
+        {
+          id: 'sched-1',
+          className: 'Kelas 1-A',
+          day: 'Senin',
+          subject: 'Upacara & Tematik',
+          startTime: '07:30',
+          endTime: '09:00',
+          room: 'Ruang Kelas 1-A',
+          teacherName: 'Rina Wijaya, S.Pd.',
+          schoolId: 'school-1',
+          color: 'indigo'
+        },
+        {
+          id: 'sched-2',
+          className: 'Kelas 1-A',
+          day: 'Senin',
+          subject: 'Pendidikan Agama',
+          startTime: '09:30',
+          endTime: '11:00',
+          room: 'Ruang Kelas 1-A',
+          teacherName: 'Ustadz Ahmad',
+          schoolId: 'school-1',
+          color: 'emerald'
+        },
+        {
+          id: 'sched-3',
+          className: 'Kelas 1-A',
+          day: 'Selasa',
+          subject: 'Matematika',
+          startTime: '07:30',
+          endTime: '09:00',
+          room: 'Ruang Kelas 1-A',
+          teacherName: 'Budi Santoso, S.Pd.',
+          schoolId: 'school-1',
+          color: 'amber'
+        },
+        {
+          id: 'sched-4',
+          className: 'Kelas 1-A',
+          day: 'Selasa',
+          subject: 'Bahasa Indonesia',
+          startTime: '09:30',
+          endTime: '11:00',
+          room: 'Ruang Kelas 1-A',
+          teacherName: 'Rina Wijaya, S.Pd.',
+          schoolId: 'school-1',
+          color: 'sky'
+        },
+        {
+          id: 'sched-5',
+          className: 'Kelas 1-A',
+          day: 'Rabu',
+          subject: 'Seni Budaya & Prakarya',
+          startTime: '07:30',
+          endTime: '09:00',
+          room: 'Aula Seni',
+          teacherName: 'Siti Aminah, S.Sn.',
+          schoolId: 'school-1',
+          color: 'rose'
+        },
+        {
+          id: 'sched-6',
+          className: 'Kelas 1-A',
+          day: 'Rabu',
+          subject: 'Pendidikan Jasmani',
+          startTime: '09:30',
+          endTime: '11:00',
+          room: 'Lapangan Olahraga',
+          teacherName: 'Joko Susilo, S.Pd.',
+          schoolId: 'school-1',
+          color: 'violet'
+        },
+        {
+          id: 'sched-7',
+          className: 'Kelas 1-B',
+          day: 'Senin',
+          subject: 'Matematika',
+          startTime: '07:30',
+          endTime: '09:00',
+          room: 'Ruang Kelas 1-B',
+          teacherName: 'Budi Santoso, S.Pd.',
+          schoolId: 'school-1',
+          color: 'amber'
+        },
+        {
+          id: 'sched-8',
+          className: 'Kelas 1-B',
+          day: 'Senin',
+          subject: 'Bahasa Inggris',
+          startTime: '09:30',
+          endTime: '11:00',
+          room: 'Lab Bahasa',
+          teacherName: 'Lina Marlina, M.Pd.',
+          schoolId: 'school-1',
+          color: 'pink'
+        }
+      ];
+
+      for (const sched of initialSchedules) {
+        await setDoc(doc(db, 'schedules', sched.id), sched);
+      }
+    }
+  } catch (error) {
+    console.error('[Firebase] Error seeding initial schedules:', error);
+  }
+}
+
+// 21. Notification Operations
+export async function dbAddNotification(notif: Omit<AppNotification, 'id' | 'createdAt' | 'readBy'> & { id?: string }) {
+  try {
+    const notifId = notif.id || `notif-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    const fullNotif: AppNotification = {
+      ...notif,
+      id: notifId,
+      createdAt: new Date().toISOString(),
+      readBy: []
+    };
+    await setDoc(doc(db, 'notifications', notifId), fullNotif);
+    return fullNotif;
+  } catch (error) {
+    console.error('[Firebase] Error adding notification:', error);
+  }
+}
+
+export async function dbMarkNotificationAsRead(notifId: string, userId: string) {
+  try {
+    await updateDoc(doc(db, 'notifications', notifId), {
+      readBy: arrayUnion(userId)
+    });
+  } catch (error) {
+    console.error('[Firebase] Error marking notification as read:', error);
+  }
+}
+
+export async function dbMarkAllNotificationsAsRead(userId: string, schoolId: string) {
+  try {
+    const collRef = collection(db, 'notifications');
+    const q = query(collRef, where('schoolId', '==', schoolId));
+    const snap = await getDocs(q);
+    for (const d of snap.docs) {
+      const data = d.data() as AppNotification;
+      if (!data.readBy.includes(userId)) {
+        await updateDoc(doc(db, 'notifications', d.id), {
+          readBy: arrayUnion(userId)
+        });
+      }
+    }
+  } catch (error) {
+    console.error('[Firebase] Error marking all notifications as read:', error);
+  }
+}
+
+export async function dbDeleteNotification(notifId: string) {
+  try {
+    await deleteDoc(doc(db, 'notifications', notifId));
+  } catch (error) {
+    console.error('[Firebase] Error deleting notification:', error);
+  }
+}
+
+

@@ -1,3 +1,9 @@
+export interface AttendanceLog {
+  date: string;
+  status: 'HADIR' | 'IZIN' | 'SAKIT' | 'ALFA' | 'BELUM ABSEN';
+  time?: string;
+}
+
 export interface Student {
   id: string;
   name: string;
@@ -5,6 +11,7 @@ export interface Student {
   avatar: string;
   attendanceToday: 'HADIR' | 'IZIN' | 'SAKIT' | 'ALFA' | 'BELUM ABSEN';
   attendanceTime?: string;
+  attendanceHistory?: AttendanceLog[];
   parentName: string;
   sppStatus: 'Belum Lunas' | 'Lunas';
   sppBills: Bill[];
@@ -85,6 +92,13 @@ export interface School {
   status: 'active' | 'suspended';
   createdAt: string;
   logoUrl?: string;
+  isPremium?: boolean;
+  bankAccountName?: string;
+  bankAccountType?: string;
+  bankAccountNumber?: string;
+  paymentGatewayType?: 'manual' | 'midtrans' | 'duitku' | 'other';
+  paymentGatewayApiKey?: string;
+  paymentGatewayMerchantCode?: string;
 }
 
 export interface LiaisonMessage {
@@ -122,5 +136,48 @@ export interface CounselingRecord {
   status: 'Draft' | 'Terpublikasi';
   schoolId?: string;
 }
+
+export interface SavingsTransaction {
+  id: string;
+  studentId: string;
+  studentName: string;
+  className: string;
+  date: string; // ISO or local date string
+  type: 'setor' | 'tarik';
+  amount: number;
+  description: string;
+  teacherName: string;
+  schoolId?: string;
+}
+
+export interface Schedule {
+  id: string;
+  className: string;
+  day: 'Senin' | 'Selasa' | 'Rabu' | 'Kamis' | 'Jumat' | 'Sabtu';
+  subject: string;
+  startTime: string;
+  endTime: string;
+  room?: string;
+  teacherName: string;
+  schoolId: string;
+  color: string; // e.g. 'emerald' | 'amber' | 'rose' | 'indigo' | 'sky' | 'violet' | 'pink'
+}
+
+export interface AppNotification {
+  id: string;
+  schoolId: string;
+  title: string;
+  body: string;
+  type: 'announcement' | 'permit' | 'liaison' | 'grade' | 'attendance' | 'spp' | 'counseling' | 'calendar' | 'keuangan' | 'general';
+  relatedId?: string;
+  userId?: string;
+  role?: 'parent' | 'teacher' | 'yayasan' | 'all';
+  className?: string;
+  studentId?: string;
+  createdAt: string;
+  readBy: string[];
+}
+
+
 
 

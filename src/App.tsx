@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Student, EPermit, Grade, CalendarEvent, Announcement, User as AuthUser, LiaisonEntry, CounselingRecord, Bill, School } from './types';
+import React, { useState, useEffect, useRef } from 'react';
+import { Student, EPermit, Grade, CalendarEvent, Announcement, User as AuthUser, LiaisonEntry, CounselingRecord, Bill, School, AppNotification } from './types';
 import { INITIAL_STUDENTS, INITIAL_PERMITS, CALENDAR_EVENTS, ANNOUNCEMENTS, INITIAL_LIAISON_ENTRIES, INITIAL_COUNSELING_RECORDS } from './data';
 import ParentDashboard from './components/ParentDashboard';
 import EPermitForm from './components/EPermitForm';
@@ -17,6 +17,10 @@ import { TeacherFinancesTab } from './components/TeacherFinancesTab';
 import SuperAdminDashboard from './components/SuperAdminDashboard';
 import YayasanDashboard from './components/YayasanDashboard';
 import DuitkuSimulator from './components/DuitkuSimulator';
+import SplashScreen from './components/SplashScreen';
+import OnboardingScreen from './components/OnboardingScreen';
+import AdBanner from './components/AdBanner';
+import { sendNativeNotification, playNotificationChime } from './utils/notifications';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Users,
@@ -35,7 +39,7 @@ import {
   Award,
   BookOpen
 } from 'lucide-react';
-import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, onSnapshot, query, where, doc, updateDoc } from 'firebase/firestore';
 import {
   db,
   seedInitialData,
@@ -61,10 +65,45 @@ import {
   dbDeleteCounselingRecord,
   dbVerifyBillPayment,
   dbCreateClassBill,
-  dbCreateStudentBill
+  dbCreateStudentBill,
+  dbAddNotification,
+  dbMarkNotificationAsRead,
+  dbMarkAllNotificationsAsRead,
+  dbDeleteNotification
 } from './firebase';
 
 export default function App() {
+  const [showSplash, setShowSplash] = useState(true);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+
+  // Live local/web notifications state
+  const [notifications, setNotifications] = useState<Array<{ id: string; title: string; body: string }>>([]);
+  const [dbNotifications, setDbNotifications] = useState<AppNotification[]>([]);
+
+  // Use refs to track previous states for change detection to avoid double firing & spamming on initial loads
+  const prevPermitsRef = useRef<EPermit[]>([]);
+  const prevLiaisonRef = useRef<LiaisonEntry[]>([]);
+  const prevStudentsRef = useRef<Student[]>([]);
+  const prevAnnouncementsRef = useRef<Announcement[]>([]);
+  const prevNotificationsRef = useRef<AppNotification[]>([]);
+
+  const triggerInAppNotification = (title: string, body: string) => {
+    // 1. Trigger native push notification & play the lovely Audio chime
+    sendNativeNotification(title, body);
+
+    // 2. Add to local UI notification list
+    const newNotif = {
+      id: 'notif-' + Math.random().toString(36).substring(2, 11),
+      title,
+      body
+    };
+    setNotifications(prev => [newNotif, ...prev]);
+
+    // Auto-remove after 6 seconds
+    setTimeout(() => {
+      setNotifications(prev => prev.filter(n => n.id !== newNotif.id));
+    }, 6000);
+  };
   // Global synchronized states with Firestore real-time onSnapshot listeners (initialized empty to remove confusing dummy data)
   const [students, setStudents] = useState<Student[]>([]);
   const [permits, setPermits] = useState<EPermit[]>([]);
@@ -96,6 +135,7 @@ export default function App() {
   // Tab Views inside portals
   const [parentTab, setParentTab] = useState<'home' | 'permit' | 'presensi' | 'akademik' | 'pesan' | 'profil' | 'konseling'>('home');
   const [teacherTab, setTeacherTab] = useState<'home' | 'approval' | 'presensi' | 'akademik' | 'pesan' | 'profil' | 'konseling' | 'keuangan'>('home');
+  const [initialKeuanganTab, setInitialKeuanganTab] = useState<'approval' | 'create' | 'status' | 'savings'>('approval');
   const [parentDirection, setParentDirection] = useState(1);
   const [teacherDirection, setTeacherDirection] = useState(1);
   const [activeTeacherClass, setActiveTeacherClass] = useState<string>('');
@@ -117,12 +157,80 @@ export default function App() {
     setParentTab(newTab);
   };
 
-  const handleTeacherTabChange = (newTab: 'home' | 'approval' | 'presensi' | 'akademik' | 'pesan' | 'profil' | 'konseling' | 'keuangan') => {
+  const handleTeacherTabChange = (
+    newTab: 'home' | 'approval' | 'presensi' | 'akademik' | 'pesan' | 'profil' | 'konseling' | 'keuangan',
+    subTab?: 'approval' | 'create' | 'status' | 'savings'
+  ) => {
     const teacherTabOrder = ['home', 'approval', 'presensi', 'akademik', 'pesan', 'profil', 'konseling', 'keuangan'];
     const currentIdx = teacherTabOrder.indexOf(teacherTab);
     const newIdx = teacherTabOrder.indexOf(newTab);
     setTeacherDirection(newIdx >= currentIdx ? 1 : -1);
     setTeacherTab(newTab);
+    if (subTab) {
+      setInitialKeuanganTab(subTab);
+    } else if (newTab === 'keuangan') {
+      setInitialKeuanganTab('approval');
+    }
+  };
+
+  const handleNotificationNavigation = (type: string, relatedId?: string) => {
+    if (!currentUser) return;
+    
+    if (currentUser.role === 'parent') {
+      switch (type) {
+        case 'announcement':
+          handleParentTabChange('home');
+          break;
+        case 'permit':
+          handleParentTabChange('permit');
+          break;
+        case 'liaison':
+          handleParentTabChange('pesan');
+          break;
+        case 'grade':
+          handleParentTabChange('akademik');
+          break;
+        case 'attendance':
+          handleParentTabChange('presensi');
+          break;
+        case 'counseling':
+          handleParentTabChange('konseling');
+          break;
+        case 'spp':
+        case 'keuangan':
+          handleParentTabChange('home');
+          break;
+        default:
+          handleParentTabChange('home');
+      }
+    } else if (currentUser.role === 'teacher') {
+      switch (type) {
+        case 'announcement':
+          handleTeacherTabChange('home');
+          break;
+        case 'permit':
+          handleTeacherTabChange('approval');
+          break;
+        case 'liaison':
+          handleTeacherTabChange('pesan');
+          break;
+        case 'grade':
+          handleTeacherTabChange('akademik');
+          break;
+        case 'attendance':
+          handleTeacherTabChange('presensi');
+          break;
+        case 'counseling':
+          handleTeacherTabChange('konseling');
+          break;
+        case 'spp':
+        case 'keuangan':
+          handleTeacherTabChange('keuangan', 'approval');
+          break;
+        default:
+          handleTeacherTabChange('home');
+      }
+    }
   };
 
   // Time state for the mock status bar
@@ -143,6 +251,62 @@ export default function App() {
     const interval = setInterval(updateTime, 60000);
     return () => clearInterval(interval);
   }, []);
+
+  // Auto-archive student attendance history after 18:00 (6:00 PM)
+  useEffect(() => {
+    if (students.length === 0) return;
+
+    const checkAndArchiveAttendance = async () => {
+      const now = new Date();
+      const currentHour = now.getHours();
+
+      // Only archive after 18:00 (6 PM) local time
+      if (currentHour >= 18) {
+        const todayFormatted = now.toLocaleDateString('id-ID', {
+          weekday: 'long',
+          day: 'numeric',
+          month: 'long',
+          year: 'numeric'
+        });
+
+        for (const student of students) {
+          // If the student has today's attendance filled (not BELUM ABSEN)
+          if (student.attendanceToday && student.attendanceToday !== 'BELUM ABSEN') {
+            const history = student.attendanceHistory || [];
+            const alreadyArchived = history.some((log) => log.date === todayFormatted);
+
+            if (!alreadyArchived) {
+              console.log(`[Auto-Archive] Archiving attendance for ${student.name} on ${todayFormatted}`);
+              const newLog = {
+                date: todayFormatted,
+                status: student.attendanceToday,
+                time: student.attendanceTime || (student.attendanceToday === 'HADIR' ? '07:15 WIB' : '-')
+              };
+              const updatedHistory = [newLog, ...history];
+
+              try {
+                const stdRef = doc(db, 'students', student.id);
+                await updateDoc(stdRef, {
+                  attendanceHistory: updatedHistory,
+                  attendanceToday: 'BELUM ABSEN',
+                  attendanceTime: null
+                });
+              } catch (error) {
+                console.error(`[Auto-Archive] Failed to archive attendance for ${student.name}:`, error);
+              }
+            }
+          }
+        }
+      }
+    };
+
+    // Run when students list loads or updates
+    checkAndArchiveAttendance();
+
+    // Check periodically (every 1 minute)
+    const interval = setInterval(checkAndArchiveAttendance, 60000);
+    return () => clearInterval(interval);
+  }, [students]);
 
   // 1. Initial Seeding and Firestore Real-time Listeners
   useEffect(() => {
@@ -181,6 +345,73 @@ export default function App() {
         snapshot.forEach((doc) => {
           list.push(doc.data() as Student);
         });
+
+        if (prevStudentsRef.current.length > 0) {
+          list.forEach((student) => {
+            const prevStudent = prevStudentsRef.current.find(s => s.id === student.id);
+            if (prevStudent) {
+              // Check bills status changes
+              const prevBills = prevStudent.sppBills || [];
+              const currentBills = student.sppBills || [];
+
+              currentBills.forEach((bill) => {
+                const prevBill = prevBills.find(b => b.id === bill.id);
+                if (!prevBill) {
+                  if (currentUser?.role === 'parent' && currentUser.studentId === student.id) {
+                    triggerInAppNotification(
+                      'Tagihan Baru Diterbitkan',
+                      `Tagihan "${bill.title}" sebesar Rp ${bill.amount.toLocaleString('id-ID')} telah diterbitkan.`
+                    );
+                  }
+                } else if (prevBill.status !== bill.status) {
+                  if (bill.status === 'Pending') {
+                    if (currentUser?.role === 'teacher') {
+                      const isMyClass = !currentUser.className || currentUser.className === student.class;
+                      if (isMyClass) {
+                        triggerInAppNotification(
+                          'Bukti Pembayaran SPP',
+                          `Wali murid ${student.name} mengunggah bukti pembayaran untuk "${bill.title}".`
+                        );
+                      }
+                    }
+                  } else if (bill.status === 'Paid') {
+                    if (currentUser?.role === 'parent' && currentUser.studentId === student.id) {
+                      triggerInAppNotification(
+                        'Pembayaran SPP Disetujui',
+                        `Pembayaran untuk "${bill.title}" telah diverifikasi dan dinyatakan LUNAS.`
+                      );
+                    }
+                  }
+                }
+              });
+
+              // Check grades added
+              const prevGrades = prevStudent.grades || [];
+              const currentGrades = student.grades || [];
+              if (currentGrades.length > prevGrades.length) {
+                const latestGrade = currentGrades[0];
+                if (currentUser?.role === 'parent' && currentUser.studentId === student.id) {
+                  triggerInAppNotification(
+                    'Nilai Akademik Baru',
+                    `Nilai ${latestGrade.type} untuk mata pelajaran ${latestGrade.subject} telah dimasukkan: ${latestGrade.score}/${latestGrade.maxScore}.`
+                  );
+                }
+              }
+
+              // Check attendance updates
+              if (prevStudent.attendanceToday !== student.attendanceToday && student.attendanceToday !== 'BELUM ABSEN') {
+                if (currentUser?.role === 'parent' && currentUser.studentId === student.id) {
+                  triggerInAppNotification(
+                    'Status Presensi Hari Ini',
+                    `Presensi ${student.name} diperbarui menjadi: ${student.attendanceToday} ${student.attendanceTime ? `(${student.attendanceTime})` : ''}`
+                  );
+                }
+              }
+            }
+          });
+        }
+        prevStudentsRef.current = list;
+
         setStudents(list);
         if (list.length > 0 && !selectedStudentId) {
           setSelectedStudentId(list[0].id);
@@ -198,6 +429,32 @@ export default function App() {
         });
         // Sort by submittedAt descending
         list.sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
+
+        if (prevPermitsRef.current.length > 0) {
+          list.forEach((permit) => {
+            const prevPermit = prevPermitsRef.current.find(p => p.id === permit.id);
+            if (!prevPermit) {
+              if (currentUser?.role === 'teacher' && permit.status === 'Pending') {
+                const isMyClass = !currentUser.className || currentUser.className === permit.className;
+                if (isMyClass) {
+                  triggerInAppNotification(
+                    'Pengajuan Izin Online',
+                    `${permit.studentName} mengajukan izin ${permit.type} untuk tanggal ${permit.startDate}.`
+                  );
+                }
+              }
+            } else if (prevPermit.status !== permit.status) {
+              if (currentUser?.role === 'parent' && currentUser.studentId === permit.studentId) {
+                triggerInAppNotification(
+                  'Status Izin Online Diperbarui',
+                  `Pengajuan izin untuk ${permit.studentName} telah ${permit.status === 'Approved' ? 'DISETUJUI' : 'DITOLAK'} oleh guru.`
+                );
+              }
+            }
+          });
+        }
+        prevPermitsRef.current = list;
+
         setPermits(list);
       }
     );
@@ -210,6 +467,22 @@ export default function App() {
         snapshot.forEach((doc) => {
           list.push(doc.data() as Announcement);
         });
+
+        if (prevAnnouncementsRef.current.length > 0) {
+          list.forEach((announcement) => {
+            const prevAnn = prevAnnouncementsRef.current.find(a => a.id === announcement.id);
+            if (!prevAnn) {
+              if (currentUser?.role === 'parent' || currentUser?.role === 'teacher') {
+                triggerInAppNotification(
+                  'Pengumuman Sekolah Baru',
+                  announcement.title
+                );
+              }
+            }
+          });
+        }
+        prevAnnouncementsRef.current = list;
+
         setAnnouncements(list);
       }
     );
@@ -222,6 +495,35 @@ export default function App() {
         snapshot.forEach((doc) => {
           list.push(doc.data() as LiaisonEntry);
         });
+
+        if (prevLiaisonRef.current.length > 0) {
+          list.forEach((entry) => {
+            const prevEntry = prevLiaisonRef.current.find(e => e.id === entry.id);
+            if (prevEntry) {
+              const prevMsgs = prevEntry.messages || [];
+              const currentMsgs = entry.messages || [];
+              if (currentMsgs.length > prevMsgs.length) {
+                const latestMsg = currentMsgs[currentMsgs.length - 1];
+                if (currentUser?.role === 'teacher' && latestMsg.senderRole === 'parent') {
+                  const isMyClass = !currentUser.className || currentUser.className === entry.className;
+                  if (isMyClass) {
+                    triggerInAppNotification(
+                      `Pesan Buku Penghubung - ${entry.studentName}`,
+                      latestMsg.message
+                    );
+                  }
+                } else if (currentUser?.role === 'parent' && latestMsg.senderRole === 'teacher' && currentUser.studentId === entry.studentId) {
+                  triggerInAppNotification(
+                    'Balasan Buku Penghubung',
+                    latestMsg.message
+                  );
+                }
+              }
+            }
+          });
+        }
+        prevLiaisonRef.current = list;
+
         setLiaisonEntries(list);
       }
     );
@@ -262,6 +564,42 @@ export default function App() {
       }
     );
 
+    // Listen to notifications real-time
+    const unsubNotifications = onSnapshot(
+      query(collection(db, 'notifications'), where('schoolId', '==', schoolId)),
+      (snapshot) => {
+        const list: AppNotification[] = [];
+        snapshot.forEach((doc) => {
+          list.push(doc.data() as AppNotification);
+        });
+        // Sort by createdAt descending
+        list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+        if (prevNotificationsRef.current.length > 0) {
+          list.forEach((notif) => {
+            const alreadyExists = prevNotificationsRef.current.some(n => n.id === notif.id);
+            if (!alreadyExists) {
+              const isRelevant = 
+                notif.userId === currentUser?.id ||
+                (notif.studentId && notif.studentId === currentUser?.studentId) ||
+                (notif.className && currentUser?.className && currentUser.className.split(',').map(c => c.trim()).includes(notif.className)) ||
+                notif.role === currentUser?.role ||
+                notif.role === 'all';
+
+              if (isRelevant) {
+                try {
+                  playNotificationChime();
+                } catch (e) {}
+                triggerInAppNotification(notif.title, notif.body);
+              }
+            }
+          });
+        }
+        prevNotificationsRef.current = list;
+        setDbNotifications(list);
+      }
+    );
+
     return () => {
       unsubSchool();
       unsubStudents();
@@ -271,6 +609,7 @@ export default function App() {
       unsubCalendar();
       unsubCounseling();
       unsubTeachers();
+      unsubNotifications();
     };
   }, [currentUser]);
 
@@ -319,6 +658,16 @@ export default function App() {
     };
     try {
       await dbSubmitPermit(newPermit, newPermitData.studentId);
+      await dbAddNotification({
+        schoolId: currentUser?.schoolId || '',
+        title: 'Pengajuan Izin Online Baru',
+        body: `${newPermit.studentName} mengajukan izin ${newPermit.type} untuk tanggal ${newPermit.startDate}.`,
+        type: 'permit',
+        className: newPermit.className,
+        role: 'teacher',
+        studentId: newPermit.studentId,
+        relatedId: newPermit.id
+      });
     } catch (e) {
       console.error('[Firebase] Error submitting permit:', e);
     }
@@ -330,6 +679,15 @@ export default function App() {
     if (!permit) return;
     try {
       await dbApprovePermit(permitId, permit.studentId, permit.type);
+      await dbAddNotification({
+        schoolId: currentUser?.schoolId || '',
+        title: 'Pengajuan Izin Disetujui',
+        body: `Pengajuan izin ${permit.type} untuk ${permit.studentName} telah disetujui oleh wali kelas.`,
+        type: 'permit',
+        studentId: permit.studentId,
+        role: 'parent',
+        relatedId: permitId
+      });
     } catch (e) {
       console.error('[Firebase] Error approving permit:', e);
     }
@@ -337,8 +695,19 @@ export default function App() {
 
   // Callback when teacher rejects a permit
   const handleRejectPermit = async (permitId: string) => {
+    const permit = permits.find((p) => p.id === permitId);
+    if (!permit) return;
     try {
       await dbRejectPermit(permitId);
+      await dbAddNotification({
+        schoolId: currentUser?.schoolId || '',
+        title: 'Pengajuan Izin Ditolak',
+        body: `Pengajuan izin ${permit.type} untuk ${permit.studentName} telah ditolak oleh wali kelas.`,
+        type: 'permit',
+        studentId: permit.studentId,
+        role: 'parent',
+        relatedId: permitId
+      });
     } catch (e) {
       console.error('[Firebase] Error rejecting permit:', e);
     }
@@ -362,6 +731,7 @@ export default function App() {
       class: studentData.class,
       avatar: `https://images.unsplash.com/photo-1544717305-2782549b5136?auto=format&fit=crop&w=150&q=80`,
       attendanceToday: 'BELUM ABSEN',
+      attendanceHistory: [],
       parentName: studentData.parentName,
       sppStatus: 'Belum Lunas',
       sppBills: [
@@ -440,6 +810,17 @@ export default function App() {
   const handleUpdateAttendance = async (studentId: string, status: Student['attendanceToday'], time?: string) => {
     try {
       await dbUpdateAttendance(studentId, status, time);
+      const student = students.find((s) => s.id === studentId);
+      if (student && status !== 'BELUM ABSEN') {
+        await dbAddNotification({
+          schoolId: currentUser?.schoolId || '',
+          title: 'Presensi Harian Siswa',
+          body: `Presensi ${student.name} hari ini diperbarui menjadi: ${status} ${time ? `(${time})` : ''}.`,
+          type: 'attendance',
+          studentId: studentId,
+          role: 'parent'
+        });
+      }
     } catch (e) {
       console.error('[Firebase] Error updating attendance:', e);
     }
@@ -449,6 +830,17 @@ export default function App() {
   const handleAddGrade = async (studentId: string, grade: Grade) => {
     try {
       await dbAddGrade(studentId, grade);
+      const student = students.find((s) => s.id === studentId);
+      if (student) {
+        await dbAddNotification({
+          schoolId: currentUser?.schoolId || '',
+          title: 'Nilai Akademik Baru',
+          body: `Nilai ${grade.type} untuk mata pelajaran ${grade.subject} telah dimasukkan: ${grade.score}/${grade.maxScore}.`,
+          type: 'grade',
+          studentId: studentId,
+          role: 'parent'
+        });
+      }
     } catch (e) {
       console.error('[Firebase] Error adding grade:', e);
     }
@@ -470,6 +862,17 @@ export default function App() {
         ...record,
         schoolId: currentUser?.schoolId || ''
       });
+      if (record.status === 'Terpublikasi') {
+        await dbAddNotification({
+          schoolId: currentUser?.schoolId || '',
+          title: 'Catatan Perkembangan Siswa',
+          body: `Wali kelas mempublikasikan catatan baru untuk ${record.studentName}: "${record.title}".`,
+          type: 'counseling',
+          studentId: record.studentId,
+          role: 'parent',
+          relatedId: record.id
+        });
+      }
     } catch (e) {
       console.error('[Firebase] Error adding counseling record:', e);
     }
@@ -478,6 +881,20 @@ export default function App() {
   const handleUpdateCounselingRecord = async (recordId: string, updates: Partial<CounselingRecord>) => {
     try {
       await dbUpdateCounselingRecord(recordId, updates);
+      if (updates.status === 'Terpublikasi') {
+        const record = counselingRecords.find((r) => r.id === recordId);
+        if (record) {
+          await dbAddNotification({
+            schoolId: currentUser?.schoolId || '',
+            title: 'Catatan Perkembangan Siswa',
+            body: `Wali kelas mempublikasikan catatan baru untuk ${record.studentName}: "${record.title}".`,
+            type: 'counseling',
+            studentId: record.studentId,
+            role: 'parent',
+            relatedId: recordId
+          });
+        }
+      }
     } catch (e) {
       console.error('[Firebase] Error updating counseling record:', e);
     }
@@ -502,6 +919,14 @@ export default function App() {
     };
     try {
       await dbAddAnnouncement(newAnn);
+      await dbAddNotification({
+        schoolId: currentUser?.schoolId || '',
+        title: 'Pengumuman Sekolah Baru',
+        body: newAnn.title,
+        type: 'announcement',
+        role: 'all',
+        relatedId: newAnn.id
+      });
     } catch (e) {
       console.error('[Firebase] Error adding announcement:', e);
     }
@@ -516,6 +941,14 @@ export default function App() {
     };
     try {
       await dbAddCalendarEvent(newEvt);
+      await dbAddNotification({
+        schoolId: currentUser?.schoolId || '',
+        title: 'Agenda Sekolah Baru',
+        body: `Agenda "${newEvt.title}" telah ditambahkan untuk tanggal ${newEvt.date}.`,
+        type: 'calendar',
+        role: newEvt.visibility === 'teacher' ? 'teacher' : 'all',
+        relatedId: newEvt.id
+      });
     } catch (e) {
       console.error('[Firebase] Error adding calendar event:', e);
     }
@@ -542,6 +975,15 @@ export default function App() {
     };
     try {
       await dbAddLiaisonEntry(newEntry);
+      await dbAddNotification({
+        schoolId: currentUser?.schoolId || '',
+        title: 'Buku Penghubung Baru',
+        body: `Wali kelas membuat catatan Buku Penghubung baru untuk ${newEntry.studentName}: ${newEntry.taskTitle}.`,
+        type: 'liaison',
+        studentId: newEntry.studentId,
+        role: 'parent',
+        relatedId: newEntry.id
+      });
     } catch (e) {
       console.error('[Firebase] Error adding liaison entry:', e);
     }
@@ -560,6 +1002,31 @@ export default function App() {
     const lastUpdated = new Date().toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' });
     try {
       await dbAddLiaisonReply(entryId, newMsg, lastUpdated);
+      const entry = liaisonEntries.find((e) => e.id === entryId);
+      if (entry) {
+        if (currentUser.role === 'parent') {
+          await dbAddNotification({
+            schoolId: currentUser.schoolId || '',
+            title: `Pesan Buku Penghubung - ${entry.studentName}`,
+            body: `${currentUser.fullName}: ${messageText}`,
+            type: 'liaison',
+            className: entry.className,
+            role: 'teacher',
+            studentId: entry.studentId,
+            relatedId: entryId
+          });
+        } else {
+          await dbAddNotification({
+            schoolId: currentUser.schoolId || '',
+            title: `Balasan Buku Penghubung`,
+            body: `${currentUser.fullName}: ${messageText}`,
+            type: 'liaison',
+            studentId: entry.studentId,
+            role: 'parent',
+            relatedId: entryId
+          });
+        }
+      }
     } catch (e) {
       console.error('[Firebase] Error adding liaison replyMessage:', e);
     }
@@ -570,6 +1037,20 @@ export default function App() {
     const lastUpdated = new Date().toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' });
     try {
       await dbUpdateLiaisonStatus(entryId, status, lastUpdated);
+      const entry = liaisonEntries.find((e) => e.id === entryId);
+      if (entry) {
+        if (currentUser?.role === 'teacher') {
+          await dbAddNotification({
+            schoolId: currentUser.schoolId || '',
+            title: `Status Buku Penghubung Diperbarui`,
+            body: `Status Buku Penghubung ${entry.studentName} diperbarui menjadi: ${status}.`,
+            type: 'liaison',
+            studentId: entry.studentId,
+            role: 'parent',
+            relatedId: entryId
+          });
+        }
+      }
     } catch (e) {
       console.error('[Firebase] Error updating liaison status:', e);
     }
@@ -589,6 +1070,20 @@ export default function App() {
     const paidAt = new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
     try {
       await dbPayBill(studentId, billId, paidAt, 'Transfer M-Banking');
+      const student = students.find((s) => s.id === studentId);
+      const bill = student?.sppBills.find((b) => b.id === billId);
+      if (student && bill) {
+        await dbAddNotification({
+          schoolId: currentUser?.schoolId || '',
+          title: 'Unggah Bukti Pembayaran SPP',
+          body: `Wali murid ${student.name} mengunggah bukti pembayaran untuk "${bill.title}" (Rp ${bill.amount.toLocaleString('id-ID')}).`,
+          type: 'keuangan',
+          studentId: studentId,
+          role: 'teacher',
+          className: student.class,
+          relatedId: billId
+        });
+      }
     } catch (e) {
       console.error('[Firebase] Error paying bill:', e);
     }
@@ -599,6 +1094,14 @@ export default function App() {
     try {
       const targetClass = activeTeacherClass || currentUser?.className || 'TK-A';
       await dbCreateClassBill(targetClass, billTemplate, currentUser?.schoolId || '');
+      await dbAddNotification({
+        schoolId: currentUser?.schoolId || '',
+        title: 'Tagihan SPP Baru Diterbitkan',
+        body: `Tagihan "${billTemplate.title}" sebesar Rp ${billTemplate.amount.toLocaleString('id-ID')} telah diterbitkan untuk kelas ${targetClass}.`,
+        type: 'keuangan',
+        className: targetClass,
+        role: 'parent'
+      });
     } catch (e) {
       console.error('[Firebase] Error adding class bill:', e);
     }
@@ -608,6 +1111,17 @@ export default function App() {
   const handleAddStudentBill = async (studentId: string, billTemplate: Omit<Bill, 'id'>) => {
     try {
       await dbCreateStudentBill(studentId, billTemplate);
+      const student = students.find((s) => s.id === studentId);
+      if (student) {
+        await dbAddNotification({
+          schoolId: currentUser?.schoolId || '',
+          title: 'Tagihan SPP Baru Diterbitkan',
+          body: `Tagihan "${billTemplate.title}" sebesar Rp ${billTemplate.amount.toLocaleString('id-ID')} telah diterbitkan untuk ${student.name}.`,
+          type: 'keuangan',
+          studentId: studentId,
+          role: 'parent'
+        });
+      }
     } catch (e) {
       console.error('[Firebase] Error adding student bill:', e);
     }
@@ -617,6 +1131,21 @@ export default function App() {
   const handleVerifyPayment = async (studentId: string, billId: string, approve: boolean) => {
     try {
       await dbVerifyBillPayment(studentId, billId, approve);
+      const student = students.find((s) => s.id === studentId);
+      const bill = student?.sppBills.find((b) => b.id === billId);
+      if (student && bill) {
+        await dbAddNotification({
+          schoolId: currentUser?.schoolId || '',
+          title: approve ? 'Pembayaran SPP Disetujui' : 'Pembayaran SPP Ditolak',
+          body: approve 
+            ? `Pembayaran untuk "${bill.title}" (${student.name}) telah terverifikasi LUNAS.`
+            : `Bukti pembayaran untuk "${bill.title}" (${student.name}) ditolak. Silakan unggah ulang.`,
+          type: 'keuangan',
+          studentId: studentId,
+          role: 'parent',
+          relatedId: billId
+        });
+      }
     } catch (e) {
       console.error('[Firebase] Error verifying payment:', e);
     }
@@ -624,6 +1153,17 @@ export default function App() {
 
   // Simulated notification counts
   const pendingApprovalCount = permits.filter((p) => p.status === 'Pending').length;
+
+  // Computed values for Parent Portal
+  const activeParentStudent = currentUser && activeRole === 'parent' ? students.find((s) => s.id === selectedStudentId) : null;
+  const activeParentStudentClass = activeParentStudent?.class;
+  const activeParentStudentTeacher = activeParentStudentClass ? teachers.find((t) => t.className === activeParentStudentClass) : null;
+  const resolvedTeacherName = activeParentStudentTeacher?.fullName || 'Wali Kelas';
+
+  // Computed values for Teacher Portal
+  const teacherClasses = currentUser && activeRole === 'teacher' && currentUser.className
+    ? currentUser.className.split(',').map(c => c.trim())
+    : [];
 
   // Intercept for Duitku payment simulator screen
   const queryParams = new URLSearchParams(window.location.search);
@@ -640,26 +1180,87 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] text-slate-800 flex flex-col antialiased selection:bg-brand-accent selection:text-white">
-      
+    <div className="min-h-screen bg-[#F8FAFC] text-slate-800 flex flex-col antialiased selection:bg-brand-accent selection:text-white font-sans">
+      <AnimatePresence>
+        {showSplash && (
+          <motion.div
+            key="splash-screen-wrapper"
+            initial={{ opacity: 1 }}
+            exit={{ opacity: 0, scale: 1.05 }}
+            transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+            className="fixed inset-0 z-[9999]"
+          >
+            <SplashScreen onComplete={() => {
+              setShowSplash(false);
+              if (!localStorage.getItem('hasCompletedOnboarding')) {
+                setShowOnboarding(true);
+              }
+            }} />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showOnboarding && (
+          <motion.div
+            key="onboarding-screen-wrapper"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.4 }}
+            className="fixed inset-0 z-[9995]"
+          >
+            <OnboardingScreen onComplete={() => setShowOnboarding(false)} />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Floating Interactive Push Notifications */}
+      <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[10000] flex flex-col gap-2.5 w-full max-w-sm px-4 pointer-events-none">
+        <AnimatePresence>
+          {notifications.map((notif) => (
+            <motion.div
+              key={notif.id}
+              initial={{ opacity: 0, y: -50, scale: 0.9 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -20, scale: 0.9 }}
+              transition={{ type: "spring", stiffness: 350, damping: 25 }}
+              className="bg-slate-900/95 text-white p-4 rounded-3xl shadow-[0_10px_30px_rgba(15,23,42,0.25)] border border-slate-800/80 backdrop-blur-md flex items-start gap-3.5 relative overflow-hidden group select-none cursor-pointer pointer-events-auto"
+              onClick={() => {
+                setNotifications(prev => prev.filter(n => n.id !== notif.id));
+              }}
+            >
+              <div className="absolute top-0 left-0 bottom-0 w-1.5 bg-yellow-400" />
+              <div className="bg-yellow-400/10 text-yellow-400 p-2 rounded-2xl shrink-0 border border-yellow-400/25">
+                <svg className="w-5 h-5 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                </svg>
+              </div>
+              <div className="space-y-0.5 flex-1 min-w-0 pr-4">
+                <h4 className="font-display font-extrabold text-xs tracking-tight text-white line-clamp-1">{notif.title}</h4>
+                <p className="text-[11px] text-slate-300 font-semibold leading-relaxed line-clamp-2">{notif.body}</p>
+              </div>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setNotifications(prev => prev.filter(n => n.id !== notif.id));
+                }}
+                className="text-slate-400 hover:text-white p-1 rounded-full hover:bg-white/5 transition-colors focus:outline-none shrink-0"
+              >
+                <svg className="w-3.5 h-3.5 stroke-current" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
 
       {/* Main Sandbox Layout with Full Width Container */}
       <div className="w-full max-w-4xl mx-auto flex-1 flex flex-col bg-white shadow-sm relative min-h-screen">
         
-        {/* Top Header Information Bar */}
-        <div className="bg-brand-blue text-white px-6 py-2.5 flex items-center justify-between text-xs font-semibold tracking-tight shrink-0 relative z-40 shadow-sm">
-          <span className="flex items-center gap-1.5 font-display font-bold uppercase tracking-wider text-[10px] text-sky-200">
-            <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
-            {activeRole === 'superadmin' 
-              ? 'EduConnect Super Admin Global' 
-              : activeRole === 'yayasan'
-              ? 'EduConnect Portal Yayasan'
-              : 'EduConnect TK Mutiara Bangsa'}
-          </span>
-          <div className="flex items-center gap-1.5 font-mono text-[11px]">
-            <span>Sistem Aktif • {timeString}</span>
-          </div>
-        </div>
+
 
         {/* Simulated App Content with Staggered Animations */}
         <div className="flex-1 overflow-y-auto bg-[#F8FAFC] focus:outline-none pb-20">
@@ -696,12 +1297,7 @@ export default function App() {
                   >
                     <YayasanDashboard currentUser={currentUser} onLogout={handleLogout} />
                   </motion.div>
-                ) : activeRole === 'parent' ? (() => {
-                  const activeParentStudent = students.find((s) => s.id === selectedStudentId);
-                  const activeParentStudentClass = activeParentStudent?.class;
-                  const activeParentStudentTeacher = teachers.find((t) => t.className === activeParentStudentClass);
-                  const resolvedTeacherName = activeParentStudentTeacher?.fullName || 'Wali Kelas';
-                  return (
+                ) : activeRole === 'parent' ? (
                     /* PARENT PORTAL */
                     <motion.div
                       key="parent-portal"
@@ -734,6 +1330,14 @@ export default function App() {
                               onUpdateAttendance={handleUpdateAttendance}
                               schoolLogoUrl={currentSchool?.logoUrl}
                               schoolName={currentSchool?.name}
+                              onReplayOnboarding={() => setShowOnboarding(true)}
+                              isPremium={currentSchool?.isPremium}
+                              notifications={dbNotifications}
+                              currentUser={currentUser}
+                              onMarkNotificationAsRead={(id) => dbMarkNotificationAsRead(id, currentUser?.id || '')}
+                              onMarkAllNotificationsAsRead={() => dbMarkAllNotificationsAsRead(currentUser?.id || '', currentUser?.schoolId || '')}
+                              onDeleteNotification={dbDeleteNotification}
+                              onNavigateToNotification={handleNotificationNavigation}
                             />
                           </motion.div>
                         )}
@@ -879,10 +1483,7 @@ export default function App() {
                         )}
                       </AnimatePresence>
                     </motion.div>
-                  );
-                })() : (() => {
-                  const teacherClasses = currentUser?.className ? currentUser.className.split(',').map(c => c.trim()) : [];
-                  return (
+                ) : activeRole === 'teacher' ? (
                     /* TEACHER PORTAL */
                     <motion.div
                       key="teacher-portal"
@@ -929,7 +1530,7 @@ export default function App() {
                             permits={permits}
                             onGoToApproval={() => handleTeacherTabChange('approval')}
                             onGoToKonseling={() => handleTeacherTabChange('konseling')}
-                            onGoToFinances={() => handleTeacherTabChange('keuangan')}
+                            onGoToFinances={(subTab) => handleTeacherTabChange('keuangan', subTab)}
                             onUpdateAttendance={handleUpdateAttendance}
                             onAddGrade={handleAddGrade}
                             teacherName={currentUser.fullName}
@@ -943,6 +1544,14 @@ export default function App() {
                             onDeleteStudent={handleDeleteStudent}
                             schoolLogoUrl={currentSchool?.logoUrl}
                             schoolName={currentSchool?.name}
+                            onReplayOnboarding={() => setShowOnboarding(true)}
+                            isPremium={currentSchool?.isPremium}
+                            notifications={dbNotifications}
+                            currentUser={currentUser}
+                            onMarkNotificationAsRead={(id) => dbMarkNotificationAsRead(id, currentUser?.id || '')}
+                            onMarkAllNotificationsAsRead={() => dbMarkAllNotificationsAsRead(currentUser?.id || '', currentUser?.schoolId || '')}
+                            onDeleteNotification={dbDeleteNotification}
+                            onNavigateToNotification={handleNotificationNavigation}
                           />
                         </motion.div>
                       )}
@@ -987,6 +1596,7 @@ export default function App() {
                             onVerifyPayment={handleVerifyPayment}
                             className={activeTeacherClass || currentUser.className || 'TK-A'}
                             teacherName={currentUser.fullName}
+                            initialTab={initialKeuanganTab}
                           />
                         </motion.div>
                       )}
@@ -1119,10 +1729,13 @@ export default function App() {
                       )}
                     </AnimatePresence>
                   </motion.div>
-                );
-              })()}
+                ) : null}
               </AnimatePresence>
             </div>
+
+            {currentUser && (activeRole === 'parent' || activeRole === 'teacher') && (
+              <AdBanner currentSchool={currentSchool} />
+            )}
 
             {/* Bottom Navigation Bar - Fixed/Sticky at the bottom */}
             {currentUser && (activeRole === 'parent' || activeRole === 'teacher') && (
